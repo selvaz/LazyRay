@@ -138,19 +138,28 @@ def classify_countries(db_path: Optional[str] = None,
             now,
         ))
 
+    # One explicit transaction: DuckDB autocommits each statement otherwise,
+    # so a failure partway through (or between the DROP and the re-CREATE)
+    # would leave country_classification dropped or empty instead of intact
+    # (same class of bug as dalio.py's run_dalio(), Codex review).
     con = get_conn(db_path)
-    con.execute("DROP TABLE IF EXISTS country_classification")
-    con.execute("""CREATE TABLE country_classification (
-        country_iso3 VARCHAR PRIMARY KEY, name VARCHAR,
-        region_group VARCHAR, region_geo VARCHAR, income VARCHAR,
-        development VARCHAR, fx_regime VARCHAR, imf_program BOOLEAN,
-        g7 BOOLEAN, eu BOOLEAN, euro BOOLEAN,
-        energy_position VARCHAR, net_fuel_gdp DOUBLE,
-        resource_dependence VARCHAR, tourism_dependence VARCHAR,
-        remittance_dependence VARCHAR, computed_at TIMESTAMP)""")
-    con.executemany(
-        "INSERT INTO country_classification VALUES (" + ",".join("?" * 17) + ")", rows)
-    con.commit()
+    con.execute("BEGIN TRANSACTION")
+    try:
+        con.execute("DROP TABLE IF EXISTS country_classification")
+        con.execute("""CREATE TABLE country_classification (
+            country_iso3 VARCHAR PRIMARY KEY, name VARCHAR,
+            region_group VARCHAR, region_geo VARCHAR, income VARCHAR,
+            development VARCHAR, fx_regime VARCHAR, imf_program BOOLEAN,
+            g7 BOOLEAN, eu BOOLEAN, euro BOOLEAN,
+            energy_position VARCHAR, net_fuel_gdp DOUBLE,
+            resource_dependence VARCHAR, tourism_dependence VARCHAR,
+            remittance_dependence VARCHAR, computed_at TIMESTAMP)""")
+        con.executemany(
+            "INSERT INTO country_classification VALUES (" + ",".join("?" * 17) + ")", rows)
+        con.execute("COMMIT")
+    except Exception:
+        con.execute("ROLLBACK")
+        raise
 
     summ = pd.DataFrame(rows, columns=[
         "iso", "name", "rg", "geo", "inc", "dev", "fx", "imf", "g7", "eu", "euro",

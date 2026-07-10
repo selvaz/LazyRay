@@ -60,7 +60,12 @@ def main() -> int:
                            hub_db_path=args.hub_db)
     for name, n in summary.items():
         print(f"  {name}: {n} countries scored")
-    if all(n == 0 for n in summary.values()):
+    # cycle_classifier is None (not 0) when its gate was skipped -- excluded
+    # here so it can't make an all-engines-empty run look non-empty (Codex
+    # review: None == 0 is False, so `all()` over every value including it
+    # never fired, letting a no-data run "succeed" with a blank report).
+    engine_counts = [n for name, n in summary.items() if name != "cycle_classifier"]
+    if all(n == 0 for n in engine_counts):
         print("No scores written (empty macro_panel?) - skipping report.", file=sys.stderr)
         return 1
 

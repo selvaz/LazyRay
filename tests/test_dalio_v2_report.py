@@ -76,3 +76,21 @@ def test_embedded_js_is_syntactically_valid(tmp_path):
     p.write_text(js, encoding="utf-8")
     res = subprocess.run(["node", "--check", str(p)], capture_output=True, text=True)
     assert res.returncode == 0, res.stderr
+
+
+def test_cli_empty_panel_exits_nonzero(tmp_db, monkeypatch, capsys):
+    # Codex review: cycle_classifier reports None (not 0) in the summary
+    # when its gate is skipped, which used to make
+    # `all(n == 0 for n in summary.values())` evaluate False even when every
+    # requested engine scored zero countries (None == 0 is False) -- the CLI
+    # then "succeeded" with a blank report instead of taking the error path.
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    import run_dalio_v2 as cli
+
+    con = get_hub_conn()   # bootstraps an empty, schema'd hub DB
+    con.close()
+
+    monkeypatch.setattr(sys, "argv", ["run_dalio_v2.py", "--ref-year", "2026"])
+    assert cli.main() == 1
+    assert "No scores written" in capsys.readouterr().err
