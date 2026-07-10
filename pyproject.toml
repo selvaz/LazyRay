@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lazyray"
+version = "0.1.0"
+description = "Ray Dalio-style debt-cycle & growth/inflation regime engine (v1 composite + 5-engine v2 architecture) for market-data-hub."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Proprietary" }
+authors = [{ name = "Marco Selva" }]
+dependencies = [
+    "duckdb>=1.0",
+    "pandas>=2.0",
+    "numpy",
+    "pyyaml",
+    "filelock>=3.0",
+    # market-data-hub is a private, git-installed package (dependency
+    # confusion exposure if pinned to a bare PyPI name); pinned to the
+    # commit that introduced reader.read_macro_panel_ext(), the public read
+    # API this package uses instead of touching the hub's DuckDB file
+    # directly. See docs/ECOSYSTEM_RATIONALIZATION.md in market-data-hub for
+    # the extraction rationale and LazyFin's identical pin pattern.
+    "market-data-hub @ git+https://github.com/selvaz/market-data-hub.git@42ed9ea7dd152160f574efa06a30c4f128732799",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0", "pytest-cov>=4.0", "pytest-randomly>=3.12", "ruff", "pip-audit",
+    "mypy>=1.8", "types-requests", "types-PyYAML",
+    "typing_extensions",
+]
+
+[tool.mypy]
+files = ["lazyray"]
+ignore_missing_imports = true
+check_untyped_defs = false
+disallow_untyped_defs = false
+no_implicit_optional = true
+warn_return_any = true
+warn_unused_ignores = true
+
+[tool.setuptools.packages.find]
+include = ["lazyray*"]
+
+[tool.setuptools.package-data]
+lazyray = ["config/*.yaml", "db/schema.sql"]

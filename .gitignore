@@ -1,0 +1,37 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Database
+*.duckdb
+*.duckdb.wal
+*.db
+*.lock
+
+# Generated outputs
+reports/
+logs/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# Env
+.env
+*.env
+
+*.egg-info/
+dist/
+build/
+
+# Packaging / test tooling artifacts (pytest-cov, python -m build)
+.coverage
+.coverage.*
+htmlcov/
