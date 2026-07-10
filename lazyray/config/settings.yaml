@@ -1,0 +1,208 @@
+# LazyRay settings — moved verbatim from market-data-hub's settings.yaml
+# (dalio:/dalio_v2: blocks) when the Dalio analytical layer was extracted
+# into its own repo. See docs/ECOSYSTEM_RATIONALIZATION.md (market-data-hub)
+# for the extraction rationale.
+
+# LazyRay's own DuckDB file (output: dalio_signals/pillar_scores/regime_state/
+# engine_scores/dalio_cycle_v2/country_classification). Precedence: explicit
+# db_path arg -> LAZYRAY_DB env -> this key -> repo-local default.
+db_path: "lazyray.duckdb"
+
+dalio:
+  z_window_years: 10          # z-score window (same frequency)
+  z_min_obs: 5                # minimum observations for z-score (below → NULL)
+  z_pos: 1.0                  # z threshold for POS signal
+  z_neg: -1.0                 # z threshold for NEG signal
+  # archetypal debt cycle thresholds (Dalio)
+  credit_gap_bubble: 10.0     # credit-to-GDP gap > +10pp = bubble
+  dsr_high: 20.0              # (absolute fallback if history is missing)
+  dsr_peak_pct: 0.80          # DSR "stressed" if > 80th percentile of ITS history
+                              # (Dalio: the peak vs itself matters, not the level)
+  rate_near_zero: 1.0         # policy rate < 1% = pushing on a string
+  credit_gap_late: 5.0        # gap 5-10pp = late/leveraging (toward the bubble)
+  weak_growth: 1.5            # growth < 1.5% = weak (for pushing on a string)
+  # LONG/sovereign debt cycle (Dalio's key thesis on the US):
+  # the LEVEL of debt matters, not just the change.
+  debt_high_level: 100.0      # public debt > 100% GDP = high
+  debt_crisis_level: 130.0    # > 130% = very high (late cycle regardless)
+  deficit_large: -4.5         # fiscal deficit < -4.5% GDP = large
+  # debt/GDP TREND (Dalio's signal #1: debt vs income). Slope over
+  # window [ref-3, ref+5] (includes the WEO projections, forward-looking).
+  debt_trend_window_back: 3   # years back
+  debt_trend_window_fwd: 5    # years forward (forecast)
+  debt_trend_high: 1.5        # > +1.5 pp/year = markedly rising trajectory
+  debt_trend_moderate: 0.7    # > +0.7 pp/year = rising
+  # composite weights per pillar (the sum is renormalized over the available ones)
+  pillar_weights:
+    growth: 20
+    debt_cycle: 20
+    liquidity: 15
+    external: 15
+    sovereign: 10
+    banking: 10
+    governance: 5
+    geopolitical: 5
+    social: 5                 # NEW dimension: inequality (Gini) — Dalio's internal
+                              # -conflict / changing-world-order pillar. Genuinely
+                              # new (not in the other 8 pillars), so no double count.
+    markets: 0                # staged market inputs (rates, debt, REER, 10Y):
+                              # declared but UNWEIGHTED — redundant with existing
+                              # pillars, kept out of the composite to avoid double
+                              # counting (they feed derived calcs like nom_rate).
+
+# Dalio v2 — 5-engine architecture (additive, see
+# docs/DALIO_5ENGINE_IMPLEMENTATION_PLAN_2026-07.md). All 5 engines are live.
+# Thresholds/weights live here (exception: the reserve-currency country set,
+# still hardcoded in external_constraint.py pending the plan's Fase 0
+# countries.yaml flags), so Phase 6 sensitivity analysis can iterate without
+# touching code.
+dalio_v2:
+  # dead-band = 10% of the span from one bucket threshold below the crossed
+  # boundary to one above it (4 points for the default 20-spaced cuts)
+  hysteresis_margin_pct: 0.10
+  # a point observation older than this (vs ref_date) is treated as missing
+  # instead of scored as the country's current condition; annual data with a
+  # 1-2y publication lag (WGI, IIP) passes, a decade-old print doesn't
+  staleness_max_age_years: 4
+
+  sovereign_solvency:
+    # score_threshold(value, watch, stress, critical): 0 below watch, 50 at
+    # stress, 100 at critical, linearly interpolated. debt_gdp/net_debt_gdp
+    # are differentiated by income group (DM/EM, from countries.yaml).
+    thresholds:
+      debt_gdp_dm: [90, 110, 130]
+      debt_gdp_em: [60, 80, 100]
+      net_debt_gdp_dm: [90, 110, 130]
+      net_debt_gdp_em: [60, 80, 100]
+      interest_revenue: [10, 15, 25]
+      interest_gdp: [3, 5, 7]
+      primary_deficit_gdp: [2, 4, 6]
+      r_minus_g: [1, 3, 5]
+      debt_trend_5y: [0.7, 1.5, 3.0]
+    # equal weights to start (Phase 6 will run sensitivity analysis on these)
+    weights:
+      debt_gdp: 1
+      net_debt_gdp: 1
+      interest_revenue: 1
+      interest_gdp: 1
+      primary_deficit_gdp: 1
+      r_minus_g: 1
+      debt_trend_5y: 1
+    bucket_thresholds: [20, 40, 60, 80]   # score cut points for strong/stable/watch/stressed/critical
+    bucket_labels: [strong, stable, watch, stressed, critical]
+
+  political_execution:
+    # WGI indicators are already -2.5..+2.5 standardized; scored as cross-country
+    # percentile (0-100, high WGI = low percentile-risk), then inverted (100 -
+    # percentile) so higher engine score = worse execution capacity, consistent
+    # with the other engines. voice_accountability intentionally excluded (not
+    # in Dalio proposal §9.3).
+    weights:
+      government_effectiveness: 0.30
+      rule_of_law: 0.25
+      control_corruption: 0.20
+      political_stability: 0.15
+      regulatory_quality: 0.10
+    bucket_thresholds: [20, 40, 60, 80]   # strong/adequate/watch/weak/impaired
+    bucket_labels: [strong, adequate, watch, weak, impaired]
+
+  private_credit:
+    # credit_gap: BIS bis_credit_gap where available (~43/64); elsewhere a
+    # linear-detrend proxy on private_debt_gdp (IMF GDD, 64/64) -> coverage_tier
+    # is forced to 'proxy' whenever the proxy branch is used (see module).
+    # npl_ratio thresholds are NOT from the source proposal (it gives none) --
+    # assumed IMF-typical stress benchmarks, flagged as such in the module.
+    thresholds:
+      credit_gap: [2, 5, 10]
+      private_dsr_pct: [75, 90, 95]        # percentile of the country's OWN history, 0-100
+      # real credit growth ~ YoY % change of credit/GDP + real GDP growth
+      # (ratio change nets out nominal GDP; adding real growth back recovers
+      # the inflation-adjusted credit growth these thresholds are for)
+      real_credit_growth: [5, 8, 12]
+      # real_house_price_gap is not wired yet (no BIS WS_SPP connector): the
+      # component is always missing, so it keeps a weight (counts toward
+      # n_expected -> honest coverage) but carries no threshold until it has
+      # a data source
+      npl_ratio: [3, 6, 10]                # ASSUMED, not from source proposal
+    weights:
+      credit_gap: 0.30
+      private_dsr: 0.25
+      real_credit_growth: 0.15
+      real_house_price_gap: 0.15
+      npl_ratio: 0.15
+    bucket_thresholds: [20, 40, 60, 80]
+    bucket_labels: [low, moderate, elevated, high, bubble]
+
+  external_constraint:
+    # thresholds marked ASSUMED are not in the source proposal (§12.4 only
+    # gives current_account/PIL, ext_debt_service/export, short-term ext
+    # debt/reserves, reserves/imports, FX depreciation) -- niip, fx_debt_share,
+    # inflation, fx_overvaluation thresholds are informed guesses (niip
+    # watch=-35%/GDP follows the EU Macroeconomic Imbalance Procedure alert
+    # threshold), flagged in the module docstring, revisit once real crisis
+    # episodes are backtested (Fase 6 of the plan doc).
+    thresholds:
+      current_account_deficit_gdp: [3, 5, 8]      # from source proposal §12.4
+      net_external_liability_gdp: [35, 50, 70]    # ASSUMED (EU MIP -35% alert threshold)
+      short_term_debt_reserves: [50, 100, 150]    # from source proposal §12.4
+      debt_service_exports: [15, 25, 40]          # from source proposal §12.4
+      fx_debt_share: [30, 50, 70]                 # ASSUMED
+      inflation: [5, 10, 20]                      # ASSUMED
+      fx_overvaluation_pct: [10, 20, 30]           # ASSUMED
+      reserves_months: [4, 3, 2]                  # from source proposal §12.4 (descending: lower is worse)
+    weights:
+      current_account_deficit_gdp: 1
+      net_external_liability_gdp: 1
+      short_term_debt_reserves: 1
+      debt_service_exports: 1
+      fx_debt_share: 1
+      inflation: 1
+      fx_overvaluation_pct: 1
+      reserves_months: 1
+    reserve_currency_discount: 0.6   # multiplier applied to the score for reserve-currency issuers
+    bucket_thresholds: [20, 40, 60, 80]
+    bucket_labels: [low, moderate, elevated, high, severe]
+
+  funding_liquidity:
+    # REDUCED SCOPE vs the source proposal (see plan doc Fase 4 and the
+    # module docstring): real GFN/auction/maturity-wall data is free only for
+    # ~15-25 OECD/major economies and is NOT wired here. This is "ramo B"
+    # only -- a coverage_tier that is ALWAYS capped at 'proxy', never 'full',
+    # regardless of how many of the 2 available proxy inputs are present.
+    thresholds:
+      short_term_debt_reserves: [50, 100, 150]   # from source proposal §12.4 (same series as external_constraint)
+      yield_change_12m_pp: [1.0, 2.0, 3.5]        # from source proposal §12.2 (100bp/200bp/350bp)
+    weights:
+      short_term_debt_reserves: 1
+      yield_change_12m_pp: 1
+    bucket_thresholds: [20, 40, 60, 80]
+    bucket_labels: [easy, normal, watch, stress, severe]
+
+  cycle_classifier:
+    # Fase 5 classifier (lazyray/dalio_v2/cycle_classifier.py): combines the
+    # 5 engines' HYSTERESIS-STABLE LABELS (never raw scores -- see the
+    # module docstring for why) into dalio_stage + deleveraging_type. No
+    # hysteresis_margin_pct of its own: stability is fully inherited from
+    # the 5 engines' own bucket_with_hysteresis(). Every threshold and label
+    # set a rule tests lives here, never as a literal in cycle_classifier.py
+    # -- same discipline as the 5 engines above.
+    thresholds:
+      debt_trend_falling_threshold_pp: -0.2     # debt_trend_actuals_5y must fall below this to count as "falling"
+      real_growth_positive_threshold_pct: 0.0
+      inflation_high_threshold_pct: 10.0        # ASSUMED, same cut as external_constraint's own "stress" inflation level
+      fx_depreciation_high_threshold_pct: 15.0  # ASSUMED -- proposal §10.2/§14 gives no number for a realized-12m metric
+      repressive_real_rate_threshold_pct: -2.0  # ASSUMED proxy: r_effective_pct - inflation_pct
+      repressive_fx_debt_share_max_pct: 20.0    # ASSUMED proxy: "mostly domestic-currency debt"
+      contraction_real_growth_threshold_pct: 0.0
+    # dalio_stage branch cutoffs, expressed as engine LABEL SETS at real
+    # bucket boundaries (every engine defaults to bucket_thresholds
+    # [20, 40, 60, 80]) -- never a raw score number, see module docstring.
+    stage_labels:
+      crisis_funding_labels: [severe]
+      crisis_external_labels: [high, severe]
+      late_long_debt_cycle_sovereign_labels: [stressed, critical]
+      late_long_debt_cycle_funding_labels: [watch, stress, severe]
+      private_bubble_labels: [bubble]
+      late_leveraging_labels: [high]
+    beautiful_funding_labels: [easy, normal]
+    top_risk_drivers_n: 3

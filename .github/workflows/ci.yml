@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install -U pip
+          pip install -e ".[dev]"
+
+      - name: Lint (ruff — default rule set)
+        run: ruff check .
+
+      - name: Validate config
+        run: python validate_config.py
+
+      # mypy 2.x itself requires Python >=3.10 to run; run it once, on the
+      # newest leg, matching market-data-hub's own ci.yml constraint.
+      - name: Type check (mypy)
+        if: matrix.python-version == '3.12'
+        run: mypy
+
+      - name: Dependency audit (advisory, non-blocking)
+        continue-on-error: true
+        run: pip-audit
+
+      - name: Byte-compile all modules
+        run: python -m compileall -q lazyray *.py
+
+      # Same regression class market-data-hub's ci.yml guards against: a
+      # subpackage (dalio_v2) silently missing from a real (non-editable)
+      # wheel while `pip install -e .` hides the gap.
+      - name: Verify the package actually installs (not just editable)
+        run: |
+          python -m pip install build
+          python -m build --wheel --outdir dist .
+          python -m venv /tmp/install-check
+          /tmp/install-check/bin/pip install --quiet dist/*.whl \
+            --find-links dist
+          /tmp/install-check/bin/pip install --quiet \
+            "market-data-hub @ git+https://github.com/selvaz/market-data-hub.git@42ed9ea7dd152160f574efa06a30c4f128732799"
+          /tmp/install-check/bin/python -c "
+          import lazyray, lazyray.dalio, lazyray.classify
+          import lazyray.dalio_v2.runner, lazyray.dalio_v2.cycle_classifier
+          import lazyray.dalio_v2.sovereign_solvency, lazyray.dalio_v2.scoring
+          import lazyray.db.connection
+          print('package installs and imports cleanly')
+          "
+
+      - name: Run tests (randomized order, with coverage)
+        run: |
+          pytest -q --durations=15 \
+            --cov=lazyray --cov-report=term-missing --cov-fail-under=60
