@@ -413,17 +413,26 @@ def run_dalio(db_path: Optional[str] = None, ref_year: Optional[int] = None,
                          phase, short, quadrant, now))
 
     # ---- idempotent write (tables come from schema.sql, applied by get_conn) ----
+    # One explicit transaction: DuckDB autocommits each statement otherwise,
+    # so a failure partway through the inserts would leave the deletes
+    # already committed -- wiping the previous snapshot instead of leaving
+    # it in place (Codex review).
     con = get_conn(db_path)
-    con.execute("DELETE FROM regime_state")
-    con.execute("DELETE FROM dalio_signals")
-    con.execute("DELETE FROM pillar_scores")
-    con.executemany(
-        "INSERT OR REPLACE INTO dalio_signals VALUES (?,?,?,?,?,?,?,?,?)", sig_rows)
-    con.executemany(
-        "INSERT OR REPLACE INTO pillar_scores VALUES (?,?,?,?,?,?,?,?,?)", pil_rows)
-    con.executemany(
-        "INSERT OR REPLACE INTO regime_state VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", reg_rows)
-    con.commit()
+    con.execute("BEGIN TRANSACTION")
+    try:
+        con.execute("DELETE FROM regime_state")
+        con.execute("DELETE FROM dalio_signals")
+        con.execute("DELETE FROM pillar_scores")
+        con.executemany(
+            "INSERT OR REPLACE INTO dalio_signals VALUES (?,?,?,?,?,?,?,?,?)", sig_rows)
+        con.executemany(
+            "INSERT OR REPLACE INTO pillar_scores VALUES (?,?,?,?,?,?,?,?,?)", pil_rows)
+        con.executemany(
+            "INSERT OR REPLACE INTO regime_state VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", reg_rows)
+        con.execute("COMMIT")
+    except Exception:
+        con.execute("ROLLBACK")
+        raise
 
     n_countries = panel["country_iso3"].nunique()
     phases = pd.DataFrame(reg_rows, columns=[
