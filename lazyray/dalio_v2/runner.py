@@ -128,6 +128,15 @@ def run_dalio_v2(engines: Optional[List[str]] = None, ref_year: Optional[int] = 
                             _records_with_real_nulls(cycle_df))
                     summary["cycle_classifier"] = len(cycle_df)
                 else:
+                    # A required engine that had rows for this exact ref_date
+                    # before this call can lose them here (its batch was just
+                    # replaced wholesale with an empty one -- see the DELETE
+                    # above the executemany in the loop). Any dalio_cycle_v2
+                    # rows a PRIOR full run left for this same ref_date would
+                    # otherwise dangle, describing engines that no longer
+                    # have data (Codex review). Harmless no-op when there was
+                    # nothing to clear (e.g. a brand-new ref_year).
+                    con.execute("DELETE FROM dalio_cycle_v2 WHERE ref_date = ?", [ref_date])
                     summary["cycle_classifier"] = None
                 con.execute("COMMIT")
             except Exception:

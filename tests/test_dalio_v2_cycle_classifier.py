@@ -561,3 +561,41 @@ def test_compute_full_tier_with_growth_missing_is_unclassifiable_not_early_cycle
     assert audit["unclassifiable_reason"]["dalio_stage"] == ["sovereign_solvency:real_growth_pct"]
     caveats = json.loads(row["caveats_json"])
     assert any("real_growth_pct" in c for c in caveats)
+
+
+def test_gate_failing_on_rerun_clears_the_stale_classification(tmp_db):
+    # Codex review: a required engine that HAD rows for this exact ref_date
+    # (from an earlier full run) can lose them on a rerun if its input data
+    # disappeared -- the DELETE-then-maybe-reinsert in the engine loop above
+    # replaces its batch with nothing. Before this fix, the gate then failing
+    # left the PRIOR run's dalio_cycle_v2 row dangling, describing engines
+    # that no longer have any data for this ref_date.
+    con = get_hub_conn()
+    _seed_arg_full_pipeline(con)
+    con.commit()
+    con.close()
+
+    run_dalio_v2(ref_year=2026)   # full run: dalio_cycle_v2 gets an ARG row
+    con = get_lazyray_conn(read_only=True)
+    before = con.execute(
+        "SELECT count(*) FROM dalio_cycle_v2 WHERE ref_date = DATE '2026-12-31'"
+    ).fetchone()[0]
+    con.close()
+    assert before == 1
+
+    # wipe the hub's macro_panel entirely: sovereign_solvency (a required
+    # engine) now returns an empty frame for this ref_date
+    con = get_hub_conn()
+    con.execute("DELETE FROM macro_panel")
+    con.commit()
+    con.close()
+
+    summary = run_dalio_v2(engines=["sovereign_solvency"], ref_year=2026)
+    assert summary["cycle_classifier"] is None   # gate failed
+
+    con = get_lazyray_conn(read_only=True)
+    after = con.execute(
+        "SELECT count(*) FROM dalio_cycle_v2 WHERE ref_date = DATE '2026-12-31'"
+    ).fetchone()[0]
+    con.close()
+    assert after == 0   # the stale ARG row was cleared, not left dangling

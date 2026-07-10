@@ -62,9 +62,9 @@ from market_data_hub.reader import read_macro_panel_ext
 from lazyray.config_loader import get_settings
 from lazyray.dalio import _first_avail, _latest
 from lazyray.dalio_v2.scoring import (
-    bucket_with_hysteresis, confidence_for, coverage_tier, fresh_latest,
-    git_short_sha, notna, prev_label, round_or_none, score_threshold,
-    suppress_insufficient, weighted_average,
+    bucket_with_hysteresis, confidence_for, coverage_tier, fresh_first_avail,
+    fresh_latest, git_short_sha, notna, prev_label, round_or_none,
+    score_threshold, suppress_insufficient, weighted_average,
 )
 
 ENGINE = "external_constraint"
@@ -181,8 +181,11 @@ def compute(con: duckdb.DuckDBPyConnection, ref_date, cfg: Optional[dict] = None
             _latest(_first_avail(by_ind, _IND["debt_service_exports"])), ref_ts, max_age)
         fx_debt_share, fxd_dt = fresh_latest(
             _latest(_first_avail(by_ind, _IND["fx_debt_share"])), ref_ts, max_age)
-        inflation, infl_dt = fresh_latest(
-            _latest(_first_avail(by_ind, _IND["inflation"])), ref_ts, max_age)
+        # fresh_first_avail (not _first_avail+fresh_latest): "inflation" is a
+        # 2-candidate fallback list (WEO then CPI) -- a stale WEO print must
+        # not shadow a fresh CPI one (Codex review, same class of bug already
+        # guarded against in sovereign_solvency.py).
+        inflation, infl_dt = fresh_first_avail(by_ind, _IND["inflation"], ref_ts, max_age)
         reserves_months, resm_dt = fresh_latest(
             _latest(_first_avail(by_ind, _IND["reserves_months"])), ref_ts, max_age)
 

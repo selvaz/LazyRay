@@ -38,8 +38,8 @@ from market_data_hub.reader import read_macro_panel_ext
 from lazyray.config_loader import get_settings
 from lazyray.dalio import _first_avail, _latest
 from lazyray.dalio_v2.scoring import (
-    bucket_with_hysteresis, confidence_for, coverage_tier, fresh_latest,
-    git_short_sha, prev_label, round_or_none, score_threshold,
+    bucket_with_hysteresis, confidence_for, coverage_tier, fresh_first_avail,
+    fresh_latest, git_short_sha, prev_label, round_or_none, score_threshold,
     suppress_insufficient, weighted_average,
 )
 
@@ -163,8 +163,11 @@ def compute(con: duckdb.DuckDBPyConnection, ref_date, cfg: Optional[dict] = None
         # change must not combine with a fresh GDP print into a "current"
         # number.
         ratio_growth = _yoy_pct_change(s_debt) if latest_debt is not None else None
-        real_gdp, growth_dt = fresh_latest(
-            _latest(_first_avail(by_ind, _IND["real_growth"])), ref_ts, max_age)
+        # fresh_first_avail (not _first_avail+fresh_latest): "real_growth" is
+        # a 2-candidate fallback list (WEO then real) -- a stale WEO print
+        # must not shadow a fresh real_gdp_growth one (Codex review, same
+        # class of bug already guarded against in sovereign_solvency.py).
+        real_gdp, growth_dt = fresh_first_avail(by_ind, _IND["real_growth"], ref_ts, max_age)
         real_credit_growth = (ratio_growth + real_gdp) \
             if ratio_growth is not None and real_gdp is not None else None
         npl, npl_dt = fresh_latest(_latest(_first_avail(by_ind, _IND["npl"])), ref_ts, max_age)
