@@ -21,6 +21,22 @@ dalio:
   rate_near_zero: 1.0         # policy rate < 1% = pushing on a string
   credit_gap_late: 5.0        # gap 5-10pp = late/leveraging (toward the bubble)
   weak_growth: 1.5            # growth < 1.5% = weak (for pushing on a string)
+  # deleveraging-distortion cascade (classify_cycle_phase): a passing
+  # nominal r-vs-g test is downgraded from BEAUTIFUL_DELEVERAGING to
+  # INFLATIONARY_DELEVERAGING when the best AVAILABLE signal below says the
+  # result is inflation/currency-driven rather than real strength. Tried in
+  # order: fx_debt_share (sparse, ~1/3 coverage) -> inflation (full WEO
+  # coverage) -> imf_program (static fallback).
+  fx_debt_share_high: 80.0    # % of external debt in FX > 80 = extreme, only
+                               # meant to catch clear-cut cases (few countries
+                               # have this series at all; see IMF IIPCC)
+  fx_debt_share_max_age_years: 5   # older observations are treated as
+                               # unavailable (falls through to inflation/
+                               # imf_program) -- some IIPCC series stop mid-
+                               # history (e.g. a country adopting the euro)
+  high_inflation: 15.0        # inflation > 15%/yr = nominal growth stops being
+                               # comparable to the (largely fixed/concessional)
+                               # implied debt rate
   # LONG/sovereign debt cycle (Dalio's key thesis on the US):
   # the LEVEL of debt matters, not just the change.
   debt_high_level: 100.0      # public debt > 100% GDP = high

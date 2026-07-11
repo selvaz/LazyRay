@@ -364,6 +364,7 @@ const PHASE = {
  CONTRACTION:["#dc2626","Contraction: negative growth"],
  DEPRESSION:["#7f1d1d","Depression: negative growth + debt service at its peak"],
  BEAUTIFUL_DELEVERAGING:["#0891b2","Managed deleveraging: nominal growth > nominal rate"],
+ INFLATIONARY_DELEVERAGING:["#c026d3","Inflationary deleveraging: nominal test passes, but inflation/FX (not real growth) is doing the work -- Dalio's ugly-but-mechanically-'beautiful' case"],
  UGLY_DELEVERAGING:["#9333ea","Painful deleveraging: nominal rate > nominal growth"],
  INDETERMINATE:["#94a3b8","Insufficient data"]
 };
@@ -613,6 +614,8 @@ function buildOverview(){
  let h='<h2>State of the world (Dalio synthesis)</h2><div>';
  h+='<div class="kpi"><b>'+cs.length+'</b><span>countries</span></div>';
  h+='<div class="kpi"><b>'+(pc.BEAUTIFUL_DELEVERAGING||0)+'</b><span>beautiful deleveraging</span></div>';
+ h+='<div class="kpi"><b>'+(pc.INFLATIONARY_DELEVERAGING||0)+'</b><span>inflationary deleveraging</span></div>';
+ h+='<div class="kpi"><b>'+(pc.UGLY_DELEVERAGING||0)+'</b><span>ugly deleveraging</span></div>';
  h+='<div class="kpi"><b>'+((pc.LATE_LONG_CYCLE||0)+(pc.HIGH_DEBT_STABLE||0))+'</b><span>high sovereign debt</span></div>';
  h+='<div class="kpi"><b>'+(qc.Q3||0)+'</b><span>stagflation (Q3)</span></div></div>';
  if(DATA.has_v2){
@@ -705,10 +708,16 @@ multi-year <b>debt/GDP trajectory</b> (slope, including WEO projections).</div>
 <tr><td><b>CONTRACTION</b></td><td>growth &lt; 0</td><td>recession</td></tr>
 <tr><td><b>DEPRESSION</b></td><td>growth &lt; 0 + DSR at its historical peak</td><td>debt crisis</td></tr>
 <tr><td><b>BEAUTIFUL_DELEVERAGING</b></td><td>debt/GDP falling, nominal growth &gt; nominal rate</td><td>managed deleveraging (the ideal)</td></tr>
+<tr><td><b>INFLATIONARY_DELEVERAGING</b></td><td>debt/GDP falling, nominal growth &gt; nominal rate, but distorted (fx_debt_share, then inflation &gt;15%/yr, then IMF program)</td><td>Dalio's own third category: the nominal test passes only because inflation/FX is doing the work, not real strength</td></tr>
 <tr><td><b>UGLY_DELEVERAGING</b></td><td>debt/GDP falling, nominal rate &gt; nominal growth</td><td>painful/deflationary deleveraging</td></tr></table>
-<div class="note"><b>Beautiful vs ugly:</b> Dalio's operating rule is <code>nominal growth &gt; nominal rate</code>.
+<div class="note"><b>Beautiful vs ugly vs inflationary:</b> Dalio's operating rule is <code>nominal growth &gt; nominal rate</code>
+(both nominal — this is also the IMF/EU-AMECO "implicit interest rate vs nominal GDP growth" convention).
 If nominal growth exceeds the cost of debt, debt/GDP can fall with positive growth (beautiful); the
-opposite is painful.</div>
+opposite is painful. But Dalio's own framework names a third historical case: nominal growth can clear
+the bar only because inflation/currency depreciation is doing the work — "ugly inflationary deleveraging"
+(Weimar/Latin American-style), distinct from a genuinely beautiful one. INFLATIONARY_DELEVERAGING flags
+this using the best available signal (fx_debt_share &gt; 80%, else inflation &gt; 15%/yr, else an active
+IMF program).</div>
 
 <h3>3. The Growth / Inflation matrix (Bridgewater four-box)</h3>
 <p>Two axes, each measured with the most appropriate statistic:</p>

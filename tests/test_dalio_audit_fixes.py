@@ -16,7 +16,7 @@ import pytest
 from market_data_hub.db.connection import get_conn as get_hub_conn
 from market_data_hub.db.upsert import upsert
 
-from lazyray.dalio import classify_cycle_phase, run_dalio
+from lazyray.dalio import classify_cycle_phase, is_rate_distorted, run_dalio
 from lazyray.db.connection import get_conn as get_lazyray_conn
 
 
@@ -69,7 +69,8 @@ def test_orientation_zero_not_coerced_to_pos(tmp_db):
 _TH = {"credit_gap_bubble": 10.0, "dsr_high": 20.0, "dsr_peak_pct": 0.8,
        "rate_near_zero": 1.0, "credit_gap_late": 5.0, "weak_growth": 1.5,
        "debt_high_level": 100.0, "debt_crisis_level": 130.0,
-       "deficit_large": -4.5, "debt_trend_high": 1.5, "debt_trend_moderate": 0.7}
+       "deficit_large": -4.5, "debt_trend_high": 1.5, "debt_trend_moderate": 0.7,
+       "high_inflation": 15.0, "fx_debt_share_high": 80.0}
 
 
 def test_pushing_on_string_reads_policy_rate():
@@ -85,13 +86,40 @@ def test_pushing_on_string_reads_policy_rate():
 
 def test_deleveraging_phase_keeps_implied_rate():
     # the r-vs-g debt-dynamics test stays on the stock rate: gn < rn -> UGLY
-    # even when the policy rate is far below nominal growth
+    # even when the policy rate is far below nominal growth. Default case
+    # (no imf_program, no high inflation): `rn` is assumed market-priced, so
+    # NOMINAL growth is the correct, consistent (nominal-vs-nominal) test.
     x = {"growth": 2.0, "credit_gap": 0.0, "nom_growth": 5.0,
          "nom_rate": 7.0, "policy_rate": 1.5, "debt_level": 90.0,
          "debt_falling": True, "debt_trend": -3.0, "fiscal_balance": -2.0,
          "dsr": 10.0, "dsr_pct": 0.5}
     assert classify_cycle_phase(x, _TH) == "UGLY_DELEVERAGING"
     assert classify_cycle_phase(dict(x, nom_rate=4.0), _TH) == "BEAUTIFUL_DELEVERAGING"
+
+
+def test_is_rate_distorted_cascade_priority():
+    # fx_debt_share -> inflation -> imf_program: the first AVAILABLE signal
+    # decides; lower-priority ones are ignored, even when they disagree.
+    assert is_rate_distorted(None, 20.0, False, _TH) is True     # inflation alone
+    assert is_rate_distorted(None, None, True, _TH) is True      # imf_program alone
+    assert is_rate_distorted(None, 8.0, True, _TH) is False      # inflation (available, low) beats imf_program
+    assert is_rate_distorted(None, 8.0, False, _TH) is False     # neither
+    assert is_rate_distorted(10.0, 20.0, True, _TH) is False     # low fx share wins
+    assert is_rate_distorted(90.0, 8.0, False, _TH) is True      # high fx share wins
+
+
+def test_deleveraging_phase_downgrades_to_inflationary_when_distorted():
+    # Same fixture: the nominal r-vs-g test alone says BEAUTIFUL (5.0 > 3.0).
+    # Dalio's own third historical category -- "ugly INFLATIONARY
+    # deleveraging" -- applies when `distorted_rate` (resolved upstream by
+    # is_rate_distorted(), tested above) says the pass looks driven by
+    # inflation/FX dynamics rather than real strength.
+    x = {"growth": 2.0, "credit_gap": 0.0, "nom_growth": 5.0,
+         "nom_rate": 3.0, "policy_rate": 1.5, "debt_level": 90.0,
+         "debt_falling": True, "debt_trend": -3.0, "fiscal_balance": -2.0,
+         "dsr": 10.0, "dsr_pct": 0.5}
+    assert classify_cycle_phase(x, _TH) == "BEAUTIFUL_DELEVERAGING"
+    assert classify_cycle_phase(dict(x, distorted_rate=True), _TH) == "INFLATIONARY_DELEVERAGING"
 
 
 def test_deleveraging_quality_uses_policy_rate(tmp_db):
