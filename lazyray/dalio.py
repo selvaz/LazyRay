@@ -156,9 +156,9 @@ def is_rate_distorted(fx_share, infl, imf_program: bool, th: dict) -> bool:
          implies a distorted, non-market rate even with moderate inflation.
     """
     if fx_share is not None and not pd.isna(fx_share):
-        return fx_share > th["fx_debt_share_high"]
+        return bool(fx_share > th["fx_debt_share_high"])
     if infl is not None and not pd.isna(infl):
-        return infl > th["high_inflation"]
+        return bool(infl > th["high_inflation"])
     return bool(imf_program)
 
 
