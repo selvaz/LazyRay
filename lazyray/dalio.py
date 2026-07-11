@@ -33,6 +33,7 @@ if TYPE_CHECKING:
 
 import numpy as np
 import pandas as pd
+from market_data_hub.config_loader import get_countries
 from market_data_hub.reader import read_macro_panel_ext
 
 from lazyray.config_loader import get_settings
@@ -59,6 +60,10 @@ IND = {
     "growth": ["gdp_growth_weo", "real_gdp_growth"],
     "inflation": ["inflation_avg_weo", "inflation_cpi"],
     "productivity": ["labor_productivity_level", "gdp_per_capita_growth"],
+    # % of external debt denominated in FOREIGN currency (IMF IIPCC, derived
+    # view) -- sparse (~1/3 of countries), used only as the first-priority
+    # signal in the deleveraging distortion cascade (see classify_cycle_phase).
+    "fx_debt_share": "fx_debt_share",
 }
 
 
@@ -136,6 +141,27 @@ def classify_regime(growth_delta, infl_delta):
     return "Q4"        # disinflation/recession -> bonds, cash
 
 
+def is_rate_distorted(fx_share, infl, imf_program: bool, th: dict) -> bool:
+    """Is the r-vs-g test's rate untrustworthy as a plain nominal-vs-nominal
+    comparison? Dalio's own third historical category -- "ugly INFLATIONARY
+    deleveraging" -- is when nominal growth clears nominal rate only because
+    inflation/currency dynamics are doing the work, not real strength ("
+    Principles for Navigating Big Debt Crises"). Cascade of the best
+    AVAILABLE signal, first one present wins:
+      1) fx_debt_share -- direct signal (can this country print its way out
+         of ITS OWN debt, or is it FX-denominated?); sparse (~1/3 of
+         countries, IMF IIPCC), so rarely decides the case.
+      2) inflation     -- >15%/yr, full WEO coverage.
+      3) imf_program   -- static last resort: concessional/restructured debt
+         implies a distorted, non-market rate even with moderate inflation.
+    """
+    if fx_share is not None and not pd.isna(fx_share):
+        return fx_share > th["fx_debt_share_high"]
+    if infl is not None and not pd.isna(infl):
+        return infl > th["high_inflation"]
+    return bool(imf_program)
+
+
 def classify_cycle_phase(x: dict, th: dict) -> str:
     """Threshold tree of the debt cycle (Dalio, extended spec 2.1).
 
@@ -154,6 +180,7 @@ def classify_cycle_phase(x: dict, th: dict) -> str:
     debt_lvl = x.get("debt_level")
     fisc = x.get("fiscal_balance")
     dtrend = x.get("debt_trend")          # debt/GDP trajectory (pp/year)
+    distorted_rate = x.get("distorted_rate", False)  # see is_rate_distorted()
 
     def has(v) -> "TypeGuard[float]":
         return v is not None and not pd.isna(v)
@@ -176,12 +203,19 @@ def classify_cycle_phase(x: dict, th: dict) -> str:
     if has(g) and g < 0:
         return "DEPRESSION" if dsr_stressed else "CONTRACTION"
 
-    # 2) deleveraging (debt/GDP in sustained DECLINE): beautiful vs ugly
-    #    Uses the multi-year trajectory, not the 1-year change.
+    # 2) deleveraging (debt/GDP in sustained DECLINE): beautiful vs ugly vs
+    #    inflationary. Uses the multi-year trajectory, not the 1-year change.
     #    Takes precedence -> Japan/Greece (high but declining debt) here.
+    #    Nominal-vs-nominal is Dalio's own literal r-vs-g test (also the IMF/
+    #    EU-AMECO "implicit interest rate vs nominal growth" convention). A
+    #    pass is downgraded from BEAUTIFUL to INFLATIONARY when
+    #    `distorted_rate` says the pass looks driven by inflation/FX, not
+    #    real strength -- see is_rate_distorted().
     if (debt_falling or (has(dtrend) and dtrend < -th["debt_trend_moderate"])) \
             and has(gn) and has(rn):
-        return "BEAUTIFUL_DELEVERAGING" if gn > rn else "UGLY_DELEVERAGING"
+        if gn <= rn:
+            return "UGLY_DELEVERAGING"
+        return "INFLATIONARY_DELEVERAGING" if distorted_rate else "BEAUTIFUL_DELEVERAGING"
 
     # 3) LONG/sovereign debt cycle (Dalio's key thesis): high debt
     #    (>100% GDP) that is not declining is NOT a "healthy expansion". But the
@@ -213,18 +247,20 @@ def classify_cycle_phase(x: dict, th: dict) -> str:
     return "INDETERMINATE"
 
 
-def _deleveraging_quality(g, gn, rn, debt_falling):
+def _deleveraging_quality(gn, rn, debt_falling, distorted_rate):
     """Deleveraging quality — only makes sense IF the debt is falling.
     If debt is not falling, there is NO deleveraging -> NA (no contradictions
-    like 'EARLY_EXPANSION + UGLY'). Beautiful: nominal growth > nominal rate;
-    Ugly: nominal growth < nominal rate (painful/deflationary reduction).
-    `rn` here is the POLICY rate (monetary conditions during the deleveraging),
-    not the implied stock rate."""
+    like 'EARLY_EXPANSION + UGLY'). Same three-way split as
+    classify_cycle_phase's phase (BEAUTIFUL/INFLATIONARY/UGLY) and the same
+    `distorted_rate` flag, just tested against the POLICY rate (monetary
+    conditions during the deleveraging) instead of the implied stock rate."""
     if not debt_falling:
         return "NA"
     if pd.isna(gn) or pd.isna(rn):
         return "NA"
-    return "BEAUTIFUL" if gn > rn else "UGLY"
+    if gn <= rn:
+        return "UGLY"
+    return "INFLATIONARY" if distorted_rate else "BEAUTIFUL"
 
 
 def run_dalio(db_path: Optional[str] = None, ref_year: Optional[int] = None,
@@ -244,9 +280,17 @@ def run_dalio(db_path: Optional[str] = None, ref_year: Optional[int] = None,
         "credit_gap_bubble", "dsr_high", "rate_near_zero",
         "credit_gap_late", "weak_growth",
         "debt_high_level", "debt_crisis_level", "deficit_large",
-        "debt_trend_high", "debt_trend_moderate", "dsr_peak_pct")}
+        "debt_trend_high", "debt_trend_moderate", "dsr_peak_pct",
+        "high_inflation", "fx_debt_share_high")}
     tw_back = cfg.get("debt_trend_window_back", 3)
     tw_fwd = cfg.get("debt_trend_window_fwd", 5)
+    fx_max_age = cfg.get("fx_debt_share_max_age_years", 5)
+
+    # static IMF-program flag (countries.yaml), used only to gate the
+    # deleveraging r-vs-g test onto real growth for concessional/restructured
+    # debt (see classify_cycle_phase)
+    imf_program_by_country = {c["iso3"]: bool(c.get("imf_program", False))
+                              for c in get_countries()}
 
     # Read from v_macro_panel_ext (macro_panel + FRED single-country series
     # remapped into panel shape), so cross-country FRED inputs (e.g. the 10Y
@@ -331,6 +375,7 @@ def run_dalio(db_path: Optional[str] = None, ref_year: Optional[int] = None,
         s_fisc = _first_avail(by_ind, IND["fiscal"])
         s_g = _first_avail(by_ind, IND["growth"])
         s_i = _first_avail(by_ind, IND["inflation"])
+        s_fx = _first_avail(by_ind, IND["fx_debt_share"])
 
         credit_gap, _ = _latest(s_cg)
         dsr, _ = _latest(s_dsr)
@@ -342,6 +387,14 @@ def run_dalio(db_path: Optional[str] = None, ref_year: Optional[int] = None,
         fiscal_balance, _ = _latest(s_fisc)
         growth, _ = _latest(s_g)
         infl, _ = _latest(s_i)
+        fx_debt_share, fx_date = _latest(s_fx)
+        # IMF IIPCC reporting is sparse and some countries stop mid-series
+        # (e.g. HRV's last observation is 2015, pre-euro-adoption -- its
+        # "FX-denominated debt" concept is now moot). A decade-old point
+        # shouldn't outrank fresher inflation/imf_program data in the
+        # cascade, so stale values are treated as unavailable (falls through).
+        if fx_date is not None and (ref_date.year - fx_date.year) > fx_max_age:
+            fx_debt_share = np.nan
 
         debt_income_gap = (debt - debt_prev) if not (pd.isna(debt) or pd.isna(debt_prev)) else np.nan
         # "debt falling" = multi-year TRAJECTORY declining (not 1 year)
@@ -377,15 +430,21 @@ def run_dalio(db_path: Optional[str] = None, ref_year: Optional[int] = None,
         infl_prior = _prior3(s_i)
         infl_delta = (infl - infl_prior) if not (pd.isna(infl) or pd.isna(infl_prior)) else np.nan
 
+        # resolved ONCE, fed to both the phase and the quality field below --
+        # they must never disagree on whether the deleveraging looks
+        # inflation/FX-driven rather than real (see is_rate_distorted()).
+        distorted_rate = is_rate_distorted(
+            fx_debt_share, infl, imf_program_by_country.get(country, False), th)
+
         phase = classify_cycle_phase({
             "credit_gap": credit_gap, "debt_income_gap": debt_income_gap,
             "debt_level": debt, "fiscal_balance": fiscal_balance,
             "debt_trend": debt_trend,
             "growth": growth, "nom_growth": nom_growth, "nom_rate": nom_rate,
-            "policy_rate": policy_rate,
+            "policy_rate": policy_rate, "distorted_rate": distorted_rate,
             "dsr": dsr, "dsr_pct": dsr_pct, "debt_falling": debt_falling}, th)
         quadrant = classify_regime(growth_delta, infl_delta)
-        delev = _deleveraging_quality(growth, nom_growth, policy_rate, debt_falling)
+        delev = _deleveraging_quality(nom_growth, policy_rate, debt_falling, distorted_rate)
 
         reg_rows.append((country, ref_date.date(), growth_delta, infl_delta,
                          quadrant, phase, nom_growth, nom_rate, delev,
@@ -423,12 +482,23 @@ def run_dalio(db_path: Optional[str] = None, ref_year: Optional[int] = None,
         con.execute("DELETE FROM regime_state")
         con.execute("DELETE FROM dalio_signals")
         con.execute("DELETE FROM pillar_scores")
-        con.executemany(
-            "INSERT OR REPLACE INTO dalio_signals VALUES (?,?,?,?,?,?,?,?,?)", sig_rows)
-        con.executemany(
-            "INSERT OR REPLACE INTO pillar_scores VALUES (?,?,?,?,?,?,?,?,?)", pil_rows)
-        con.executemany(
-            "INSERT OR REPLACE INTO regime_state VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", reg_rows)
+        if sig_rows:
+            con.append("dalio_signals", pd.DataFrame(sig_rows, columns=[
+                "country_iso3", "ref_date", "indicator_id", "pillar", "value",
+                "z_score", "z_window_n", "signal", "computed_at",
+            ]))
+        if pil_rows:
+            con.append("pillar_scores", pd.DataFrame(pil_rows, columns=[
+                "country_iso3", "ref_date", "pillar", "score", "n_indicators",
+                "debt_cycle_phase", "short_cycle_pos", "gi_regime", "computed_at",
+            ]))
+        if reg_rows:
+            con.append("regime_state", pd.DataFrame(reg_rows, columns=[
+                "country_iso3", "ref_date", "growth_delta", "infl_delta",
+                "quadrant", "debt_cycle_phase", "nom_growth", "nom_rate",
+                "deleveraging_quality", "credit_gap", "dsr", "debt_income_gap",
+                "debt_trend", "computed_at",
+            ]))
         con.execute("COMMIT")
     except Exception:
         con.execute("ROLLBACK")
