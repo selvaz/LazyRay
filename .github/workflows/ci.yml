@@ -59,10 +59,13 @@ jobs:
           python -m pip install build
           python -m build --wheel --outdir dist .
           python -m venv /tmp/install-check
+          # Install the wheel and let it pull market-data-hub via its own
+          # pyproject dependency (the pinned git ref). Do NOT re-install the
+          # hub at a separate pin here: a stale explicit pin would override the
+          # wheel's declared dependency and mask regressions that only appear
+          # against the real pinned commit.
           /tmp/install-check/bin/pip install --quiet dist/*.whl \
             --find-links dist
-          /tmp/install-check/bin/pip install --quiet \
-            "market-data-hub @ git+https://github.com/selvaz/market-data-hub.git@42ed9ea7dd152160f574efa06a30c4f128732799"
           /tmp/install-check/bin/python -c "
           import lazyray, lazyray.dalio, lazyray.classify
           import lazyray.dalio_v2.runner, lazyray.dalio_v2.cycle_classifier
