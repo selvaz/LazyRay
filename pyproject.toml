@@ -17,12 +17,18 @@ dependencies = [
     "pyyaml",
     "filelock>=3.0",
     # market-data-hub is a private, git-installed package (dependency
-    # confusion exposure if pinned to a bare PyPI name); pinned to the
-    # commit that introduced reader.read_macro_panel_ext(), the public read
-    # API this package uses instead of touching the hub's DuckDB file
-    # directly. See docs/ECOSYSTEM_RATIONALIZATION.md in market-data-hub for
-    # the extraction rationale and LazyFin's identical pin pattern.
-    "market-data-hub @ git+https://github.com/selvaz/market-data-hub.git@42ed9ea7dd152160f574efa06a30c4f128732799",
+    # confusion exposure if pinned to a bare PyPI name). See
+    # docs/ECOSYSTEM_RATIONALIZATION.md in market-data-hub for the
+    # extraction rationale and LazyFin's identical pin pattern.
+    #
+    # Re-aligned (ecosystem stabilization plan, ECO-007) from the stale
+    # @42ed9ea pin -- which had diverged from the combination every other
+    # consumer verifies against -- to the commit that shipped the
+    # lazydatacore schema/contract governance work (Train B). Both
+    # functions this package calls (reader.read_macro_panel_ext,
+    # config_loader.get_countries) are unchanged at the new pin; the full
+    # test suite (69 tests) passes against it unmodified.
+    "market-data-hub @ git+https://github.com/selvaz/market-data-hub.git@0eb286e4e931c089ae9d4383f5f6f615d9b4d5e4",
 ]
 
 [project.optional-dependencies]
