@@ -19,10 +19,8 @@ import os
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
-
-from lazytools.connectors.telegram import TelegramClient  # noqa: E402
-from lazyray.config_loader import get_settings  # noqa: E402
+from lazyray.config_loader import get_settings
+from lazytools.connectors.telegram import TelegramClient
 
 ROOT = Path(__file__).resolve().parent
 
