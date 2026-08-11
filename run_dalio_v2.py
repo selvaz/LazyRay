@@ -24,12 +24,10 @@ import sys
 from datetime import date, datetime
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
-
-from lazyray.config_loader import get_settings  # noqa: E402
-from lazyray.dalio_v2.report import collect, generate_html_report, to_csv  # noqa: E402
-from lazyray.dalio_v2.runner import run_dalio_v2  # noqa: E402
-from lazyray.db.connection import get_conn  # noqa: E402
+from lazyray.config_loader import get_settings
+from lazyray.dalio_v2.report import collect, generate_html_report, to_csv
+from lazyray.dalio_v2.runner import run_dalio_v2
+from lazyray.db.connection import get_conn
 
 
 def _report_dir() -> Path:
