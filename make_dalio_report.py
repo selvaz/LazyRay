@@ -33,9 +33,8 @@ from pathlib import Path
 import duckdb
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).parent))
-from lazyray.config_loader import get_settings  # noqa: E402
-from lazyray.db.connection import get_conn  # noqa: E402
+from lazyray.config_loader import get_settings
+from lazyray.db.connection import get_conn
 
 
 def _report_dir() -> Path:
