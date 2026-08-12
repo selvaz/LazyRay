@@ -13,9 +13,9 @@ module had already been imported successfully by something else.
 ``ModuleNotFoundError`` from somewhere inside the file, but a message naming
 ``pip install -e ".[telegram]"`` and the Python floor.
 
-Nothing here patches ``sys.modules`` or ``sys.path`` for the whole session:
-the isolation is a separate process with its own ``-P`` clean path, so a test
-cannot leave the interpreter in a state the next one depends on.
+Nothing here patches ``sys.modules`` or ``sys.path`` for this session: the
+isolation is a separate interpreter, so a test cannot leave state behind that
+the next one depends on.
 """
 from __future__ import annotations
 
