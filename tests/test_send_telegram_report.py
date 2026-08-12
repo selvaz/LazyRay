@@ -148,8 +148,14 @@ class TestReportSelection:
 
 def test_the_script_declares_the_extra_it_asks_people_to_install():
     """The message tells the reader to install `.[telegram]`; the extra has to
-    exist, or the advice sends them nowhere."""
-    import tomllib
+    exist, or the advice sends them nowhere.
+
+    Skipped below 3.11, where tomllib is not in the standard library and this
+    repository has no TOML parser among its dependencies. The same assertion
+    runs on 3.11 and 3.12 in the same CI, so the claim is still checked --
+    it is a fact about a file, not about the interpreter reading it.
+    """
+    tomllib = pytest.importorskip("tomllib")
 
     data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     extras = data["project"]["optional-dependencies"]
