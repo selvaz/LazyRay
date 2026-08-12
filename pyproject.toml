@@ -32,6 +32,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# send_telegram_report.py only. LazyTools is public (distribution
+# `lazytoolkit`) and pinned to the compatibility manifest's ref. Deliberately
+# without a python_version marker: LazyTools requires >= 3.11, and asking for
+# this extra on 3.9 or 3.10 must fail loudly rather than install nothing and
+# leave the send broken at runtime. The core, the tests and --dry-run never
+# import it.
+telegram = ["lazytoolkit[telegram] @ git+https://github.com/selvaz/LazyTools.git@v0.5.0"]
+
 dev = [
     "pytest>=7.0", "pytest-cov>=4.0", "pytest-randomly>=3.12", "ruff<0.16", "pip-audit",
     "mypy>=1.8", "types-requests", "types-PyYAML",

@@ -78,3 +78,34 @@ jobs:
         run: |
           pytest -q --durations=15 \
             --cov=lazyray --cov-report=term-missing --cov-fail-under=60
+
+  # The `telegram` extra is the only thing that pulls LazyTools, and the matrix
+  # above deliberately never installs it: the whole point of D16 is that the
+  # core, the tests and --dry-run work without it. So it gets its own job,
+  # which is also the only place the extra's own installability is proven —
+  # a broken git ref would otherwise stay invisible until someone tried to send.
+  #
+  # 3.12 only: LazyTools requires >= 3.11, and the extra has no marker on
+  # purpose, so asking for it on 3.9 or 3.10 must fail rather than quietly
+  # install nothing.
+  telegram-extra:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install with the telegram extra
+        run: |
+          python -m pip install -U pip
+          pip install -e ".[dev,telegram]"
+      - name: Both sides of the boundary import
+        run: |
+          python -c "
+          from lazytools.connectors.telegram import TelegramClient
+          import send_telegram_report
+          print('connector and sender import together:', TelegramClient.__name__)
+          "
+      - name: The sender's own tests
+        run: pytest -q tests/test_send_telegram_report.py

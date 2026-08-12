@@ -21,6 +21,19 @@ LazyHMM/LazyFin's relationship to the hub).
 pip install -e .
 ```
 
+Sending the Dalio v2 report to Telegram is the one thing that needs more.
+`send_telegram_report.py` imports the connector only when it actually sends,
+so the core, the tests and `--dry-run` all work with the install above; the
+extra is what a real send requires:
+
+```bash
+pip install -e ".[telegram]"     # needs Python >= 3.11
+```
+
+Without it, `--dry-run` still resolves and prints the report it would have
+sent, and asking to send says which command to run rather than failing on an
+import.
+
 Point LazyRay at its own output database (precedence: explicit arg ->
 `LAZYRAY_DB` env -> `lazyray/config/settings.yaml::db_path` -> repo-local
 default `lazyray.duckdb`), and at the hub's database for input (precedence:
