@@ -7,7 +7,14 @@ send_telegram_run_report.py). Configuration comes from environment:
     TELEGRAM_BOT_TOKEN   Bot token from BotFather
     TELEGRAM_CHAT_ID     Target chat id or @channel username
 
+Sending needs the ``telegram`` extra; everything else here does not. Finding
+the report, printing it with ``--dry-run``, and importing this module all work
+in a bare install, and the import of the connector happens inside the one
+function that sends -- so a missing extra is reported when someone tries to
+send, naming what to install, instead of making the module unimportable.
+
 Usage:
+    pip install -e ".[telegram]"       # only needed to actually send
     python send_telegram_report.py
     python send_telegram_report.py --report-dir reports/dalio_v2
     python send_telegram_report.py --dry-run
@@ -18,11 +25,18 @@ import argparse
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 from lazyray.config_loader import get_settings
-from lazytools.connectors.telegram import TelegramClient
 
 ROOT = Path(__file__).resolve().parent
+
+#: What to do about it, said once and reused by the error below.
+_TELEGRAM_HINT = (
+    'sending needs the Telegram connector: pip install -e ".[telegram]" '
+    "(LazyTools requires Python >= 3.11, so the extra cannot be installed on "
+    "3.9 or 3.10 — the rest of this script works there)"
+)
 
 
 def _report_dir() -> Path:
@@ -42,7 +56,28 @@ def _latest_report(report_dir: Path) -> Path:
     return candidates[-1]
 
 
+def _telegram_client_class() -> Any:
+    """Import the connector, and say what to install when it is not there.
+
+    Imported here rather than at module scope so that importing this file,
+    resolving a report and ``--dry-run`` all work without the extra.
+
+    Only the connector's own absence is turned into advice. A LazyTools that
+    is installed but raises while importing is a different problem, and
+    swallowing it under an "install the extra" message would send someone to
+    fix something that is not broken.
+    """
+    try:
+        from lazytools.connectors.telegram import TelegramClient
+    except ModuleNotFoundError as exc:
+        if (exc.name or "").split(".")[0] != "lazytools":
+            raise
+        raise ModuleNotFoundError(f"{exc}; {_TELEGRAM_HINT}") from exc
+    return TelegramClient
+
+
 def send_report_document(file_path: Path, *, token: str, chat_id: str, caption: str) -> None:
+    TelegramClient = _telegram_client_class()
     blob = file_path.read_bytes()
     with TelegramClient.from_token(token) as client:
         client.send_document(
