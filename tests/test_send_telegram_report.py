@@ -25,6 +25,7 @@ import textwrap
 from pathlib import Path
 
 import pytest
+import send_telegram_report as report_sender
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "send_telegram_report.py"
@@ -127,23 +128,11 @@ class TestWithoutTheExtra:
 
 class TestReportSelection:
     def test_the_newest_file_wins(self, reports: Path):
-        sys.path.insert(0, str(ROOT))
-        try:
-            import send_telegram_report as m
-
-            assert m._latest_report(reports).name == "dalio_v2_2026-08-12.html"
-        finally:
-            sys.path.remove(str(ROOT))
+        assert report_sender._latest_report(reports).name == "dalio_v2_2026-08-12.html"
 
     def test_an_empty_directory_says_what_to_run(self, tmp_path: Path):
-        sys.path.insert(0, str(ROOT))
-        try:
-            import send_telegram_report as m
-
-            with pytest.raises(FileNotFoundError, match="run_dalio_v2.py"):
-                m._latest_report(tmp_path)
-        finally:
-            sys.path.remove(str(ROOT))
+        with pytest.raises(FileNotFoundError, match="run_dalio_v2.py"):
+            report_sender._latest_report(tmp_path)
 
 
 def test_the_script_declares_the_extra_it_asks_people_to_install():
