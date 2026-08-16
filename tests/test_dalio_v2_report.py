@@ -62,6 +62,34 @@ def test_to_csv_smoke(tmp_db, tmp_path):
     assert text.count("\n") >= 3              # header + 3 countries
 
 
+def embedded_script(html: str) -> str:
+    """The contents of the report's single ``<script>`` block.
+
+    Read by locating the literal delimiters rather than by matching a tag with
+    a regular expression. ``<script>(.*)</script>`` is a tag filter, and a
+    regular expression cannot decide where a tag ends: CodeQL flags the shape
+    (py/bad-tag-filter) because in a sanitiser it is a hole, and even here it
+    would quietly return the wrong text the day the renderer emits
+    ``<script type="module">`` -- the test would then check the syntax of
+    something that is not the script.
+
+    The renderer emits exactly one block, which is asserted rather than
+    assumed: two would make "the embedded JS" an ambiguous phrase, and this
+    test would silently start checking only the first.
+    """
+    apertura, chiusura = "<script>", "</script>"
+    assert html.count(apertura) == 1, (
+        f"attesa una sola apertura {apertura}, trovate {html.count(apertura)}"
+    )
+    assert html.count(chiusura) == 1, (
+        f"attesa una sola chiusura {chiusura}, trovate {html.count(chiusura)}"
+    )
+    inizio = html.index(apertura) + len(apertura)
+    fine = html.index(chiusura)
+    assert fine > inizio, "la chiusura </script> precede l'apertura"
+    return html[inizio:fine]
+
+
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
 def test_embedded_js_is_syntactically_valid(tmp_path):
     import sys
@@ -71,7 +99,7 @@ def test_embedded_js_is_syntactically_valid(tmp_path):
         "now": "x", "cur_year": 2026, "weo_horizon": 2031, "phase_counts": {},
         "quad_counts": {}, "countries": {}, "chart_indicators": [], "has_v2": False,
     })
-    js = re.search(r"<script>(.*)</script>", html, re.S).group(1)
+    js = embedded_script(html)
     p = tmp_path / "embedded.js"
     p.write_text(js, encoding="utf-8")
     res = subprocess.run(["node", "--check", str(p)], capture_output=True, text=True)
