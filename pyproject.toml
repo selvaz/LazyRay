@@ -28,7 +28,20 @@ dependencies = [
     # functions this package calls (reader.read_macro_panel_ext,
     # config_loader.get_countries) are unchanged at the new pin; the full
     # test suite (69 tests) passes against it unmodified.
-    "market-data-hub @ git+https://github.com/selvaz/market-data-hub.git@0eb286e4e931c089ae9d4383f5f6f615d9b4d5e4",
+    #
+    # Re-aligned again 2026-08-15, from @0eb286e4 to the commit the deployment
+    # actually runs. The old pin had drifted 47 commits behind, and nothing
+    # noticed because nothing honoured it: the scheduled jobs read
+    # market_data_hub from a development checkout sitting on main, so the pin
+    # described a combination no one was running or testing. Rebuilding the
+    # environments without that leak made the two disagree out loud, as a
+    # resolution conflict, which is the first time this pin has been checked
+    # by anything other than reading it.
+    #
+    # Both functions are unchanged at the new pin -- same file, same line, same
+    # signature -- and nothing here imports market_data_hub.regime, which
+    # 5b515c0 removed on the way.
+    "market-data-hub @ git+https://github.com/selvaz/market-data-hub.git@3152f643f3186182448466c4d9d70f2fff6d9943",
 ]
 
 [project.optional-dependencies]
