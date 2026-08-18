@@ -41,7 +41,7 @@ dependencies = [
     # Both functions are unchanged at the new pin -- same file, same line, same
     # signature -- and nothing here imports market_data_hub.regime, which
     # 5b515c0 removed on the way.
-    "market-data-hub @ git+https://github.com/selvaz/market-data-hub.git@3152f643f3186182448466c4d9d70f2fff6d9943",
+    "market-data-hub @ git+https://github.com/selvaz/market-data-hub.git@636b38a7f9039113b935315fbf5f205ff9180160",
 ]
 
 [project.optional-dependencies]
@@ -51,7 +51,7 @@ dependencies = [
 # this extra on 3.9 or 3.10 must fail loudly rather than install nothing and
 # leave the send broken at runtime. The core, the tests and --dry-run never
 # import it.
-telegram = ["lazytoolkit[telegram] @ git+https://github.com/selvaz/LazyTools.git@v0.5.0"]
+telegram = ["lazytoolkit[telegram] @ git+https://github.com/selvaz/LazyTools.git@v0.6.0"]
 
 dev = [
     "pytest>=7.0", "pytest-cov>=4.0", "pytest-randomly>=3.12", "ruff<0.16", "pip-audit",
