@@ -696,3 +696,37 @@ connettore esterno.
   allocation: i 5 motori producono diagnosi paese, non pesi di portafoglio,
   e non c'è oggi un consumatore a valle. Deferred — vedi
   [DALIO_PYTHON_PORTFOLIO_FRAMEWORK_NOTES_2026-07.md](DALIO_PYTHON_PORTFOLIO_FRAMEWORK_NOTES_2026-07.md).
+
+## 7. 2026-09 changes (WP2)
+
+Vedi [DALIO_PROD_ASSESSMENT_2026-09.md](DALIO_PROD_ASSESSMENT_2026-09.md)
+(§2.2-2.4, §3.1 punti 5-7, §5 "DSA") per la diagnosi completa e le fonti
+esterne consultate. In sintesi, sopra a Fase 1 (cadenza/`ref_date`/asof/
+digest, già mergiata):
+
+- **Doppia scala di comparabilità**: ogni componente di ogni motore porta
+  ora `pct_own_history` (percentile nella storia del paese) e `pct_group`
+  (percentile nel gruppo di reddito DM/EM/Frontier) accanto a
+  `raw_value`/`score`; `engine_scores` ha due colonne nuove,
+  `relative_score`/`relative_label`, accanto a `score`/`label` (che restano
+  i primari, soglia assoluta). Vedi `scoring.percentile_own_history` /
+  `percentile_group`.
+- **Sovrano descrittivo e gated**: bucket rinominati
+  `low/moderate/elevated/high/critical` (non più
+  `strong/stable/watch/stressed/critical`); un paese non-riserva con
+  `fx_debt_share` > 50% o inflazione > 15% non può leggersi `low` —
+  diventa `fx_constrained` (override POST-assegnazione, non un sesto
+  bucket; vedi `sovereign_solvency._apply_fx_gate` e
+  `scoring.bucket_with_hysteresis`'s `_OVERRIDE_STANDS_IN_FOR`).
+- **Funding Liquidity sdoppiato per branch**: `market` (10Y fresco,
+  OCSE-32: variazione 10Y, term spread vs policy rate, variazione REER) o
+  `external` (short-term debt/reserves fresco, IDS-20: stesso indicatore +
+  debt_service_exports, soglie riusate da `external_constraint`); un paese
+  senza nessuno dei due esce con `coverage_tier='no_data'`, mai un punteggio
+  silenzioso. Il classificatore di ciclo mappa questo su
+  `dalio_stage='unclassified_no_funding_data'`, mai un `None` muto.
+- **Componente DSA**: `debt_p_up_5y` in sovereign_solvency, simulazione
+  Monte Carlo dell'identità del debito (`lazyray/dalio_v2/dsa.py`, 5000
+  path, shock congiunti su (r-g) e saldo primario dalla storia propria del
+  paese 2000..ultimo actual, winsorizzati 5/95, seed 42); minimo 12
+  osservazioni annuali altrimenti componente `None`.
