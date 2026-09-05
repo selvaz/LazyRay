@@ -182,10 +182,10 @@ def test_stage_growth_known_and_non_negative_is_early_or_mid_cycle():
 
 def _insert_engine_row(con, iso3, engine, score, label, tier, confidence, audit):
     con.execute(
-        "INSERT INTO engine_scores VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now())",
+        "INSERT INTO engine_scores VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now(), ?, ?)",
         [iso3, REF, engine, score, label, tier, confidence,
          len(audit.get("components", {})), len(audit.get("components", {})) + 1,
-         json.dumps(audit)])
+         json.dumps(audit), None, None])
 
 
 def _seed_arg_shaped(con):
@@ -280,6 +280,37 @@ def test_compute_thin_data_country_is_unclassifiable(tmp_db):
         "sovereign_solvency", "funding_liquidity", "external_constraint"}
 
 
+def test_compute_no_funding_data_gets_named_stage_not_a_bare_none(tmp_db):
+    # WP2/C: funding_liquidity's coverage_tier='no_data' (branch=none) must
+    # produce dalio_stage='unclassified_no_funding_data', never a silent
+    # None -- even though every OTHER gate engine has full data (unlike the
+    # thin-data test above, where everything is simply missing).
+    con = get_lazyray_conn()
+    _insert_engine_row(con, "QAT", "sovereign_solvency", 5.0, "low", "full", "high", {
+        "real_growth_pct": 3.0, "components": {},
+    })
+    _insert_engine_row(con, "QAT", "external_constraint", 5.0, "low", "full", "high", {
+        "components": {},
+    })
+    _insert_engine_row(con, "QAT", "private_credit", 10.0, "low", "full", "high", {
+        "components": {},
+    })
+    con.execute(
+        "INSERT INTO engine_scores VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now(), ?, ?)",
+        ["QAT", REF, "funding_liquidity", None, None, "no_data", "low", 0, 0, "{}", None, None])
+    con.commit()
+
+    df = cc.compute(con, REF)
+    con.close()
+
+    row = df.set_index("country_iso3").loc["QAT"]
+    assert row["dalio_stage"] == "unclassified_no_funding_data"
+    assert row["deleveraging_type"] is None
+    assert row["overall_confidence"] == "low"
+    caveats = json.loads(row["caveats_json"])
+    assert any("no funding data" in c for c in caveats)
+
+
 def test_compute_insufficient_tier_gates_like_missing_row(tmp_db):
     # a row that EXISTS but is coverage_tier='insufficient' must gate exactly
     # like a missing row -- the gate checks tier, not row presence
@@ -347,6 +378,15 @@ def _pr(date_, iso3, ind, val, freq="A"):
             "unit": "pct", "frequency": freq}
 
 
+# WEO/WDI/GDD/IIP annual LEVEL indicators are cutoff-gated to Dec 31 of the
+# year BEFORE ref_date's year (scoring.actual_cutoff()); ref_date below is
+# always REF = 2026-12-31, so 2025-12-31. BIS (reer_broad) and FRED
+# (bond_yield_10y) are monthly actuals with no forecast rows and stay
+# exempt, at their own already-realistic dates. See test_dalio_v2.py's
+# _LEVEL_DATE for the same convention.
+_ARG_LEVEL_DATE = dt.date(2025, 12, 31)
+
+
 def _seed_arg_full_pipeline(con):
     rows = []
     # sovereign_solvency: debt/GDP falling hard (2021-2026), classic
@@ -359,22 +399,24 @@ def _seed_arg_full_pipeline(con):
     for ind, v in [("govt_net_debt_gdp", 40.0), ("interest_on_debt_gdp", 3.0),
                   ("government_revenue_gdp", 18.0), ("primary_balance_gdp", -1.0),
                   ("gdp_growth_weo", 2.0), ("inflation_avg_weo", 30.0)]:
-        rows.append(_pr(dt.date(2026, 12, 31), "ARG", ind, v))
+        rows.append(_pr(_ARG_LEVEL_DATE, "ARG", ind, v))
     # external_constraint (inflation_avg_weo shared with sovereign above)
     for ind, v in [("current_account_gdp", 0.5), ("iip_net_position", -50000.0),
                   ("gdp_current_usd", 600000.0), ("short_term_debt_reserves", 164.0),
                   ("debt_service_exports", 38.0), ("fx_reserves_months_imports", 3.0)]:
-        rows.append(_pr(dt.date(2026, 12, 31), "ARG", ind, v))
+        rows.append(_pr(_ARG_LEVEL_DATE, "ARG", ind, v))
     # reer_broad: sharp 12m depreciation (130 -> 90, ~+31% per the sign
     # convention in _fx_depreciation_12m_pct)
     rows.append(_pr(dt.date(2025, 6, 30), "ARG", "reer_broad", 130.0, freq="M"))
     rows.append(_pr(dt.date(2026, 6, 30), "ARG", "reer_broad", 90.0, freq="M"))
-    # private_credit (gdp_growth_weo shared with sovereign above)
-    debt_gdp_traj = {y: v for y, v in zip(range(2017, 2027),
+    # private_credit (gdp_growth_weo shared with sovereign above); shifted
+    # one year earlier than the trajectory's original 2017-2026 span so its
+    # latest print (2025) clears the LEVEL cutoff too.
+    debt_gdp_traj = {y: v for y, v in zip(range(2016, 2026),
                      [40, 42, 45, 48, 52, 58, 65, 74, 84, 95])}
     for y, v in debt_gdp_traj.items():
         rows.append(_pr(dt.date(y, 12, 31), "ARG", "private_debt_gdp", v))
-    rows.append(_pr(dt.date(2026, 12, 31), "ARG", "npl_ratio", 6.0))
+    rows.append(_pr(_ARG_LEVEL_DATE, "ARG", "npl_ratio", 6.0))
     # funding_liquidity (short_term_debt_reserves shared with external above)
     rows.append(_pr(dt.date(2025, 12, 31), "ARG", "bond_yield_10y", 15.0, freq="M"))
     rows.append(_pr(dt.date(2026, 12, 31), "ARG", "bond_yield_10y", 22.0, freq="M"))
@@ -387,7 +429,7 @@ def test_full_pipeline_arg_profile_is_inflationary(tmp_db):
     con.commit()
     con.close()
 
-    summary = run_dalio_v2(ref_year=2026)
+    summary = run_dalio_v2(ref_date=REF)
     assert summary["cycle_classifier"] >= 1
 
     con = get_lazyray_conn(read_only=True)
@@ -411,8 +453,8 @@ def test_full_pipeline_rerun_is_idempotent_and_drops_stale_rows(tmp_db):
     con.commit()
     con.close()
 
-    run_dalio_v2(ref_year=2026)
-    summary2 = run_dalio_v2(ref_year=2026)   # unchanged data, same ref_date
+    run_dalio_v2(ref_date=REF)
+    summary2 = run_dalio_v2(ref_date=REF)   # unchanged data, same ref_date
 
     con = get_lazyray_conn(read_only=True)
     n = con.execute(
@@ -433,7 +475,7 @@ def test_full_pipeline_hysteresis_stability_no_second_mechanism_needed(tmp_db):
     con.commit()
     con.close()
 
-    run_dalio_v2(ref_year=2026)
+    run_dalio_v2(ref_date=REF)
     con = get_lazyray_conn(read_only=True)
     before = con.execute(
         "SELECT dalio_stage, deleveraging_type FROM dalio_cycle_v2 "
@@ -446,13 +488,15 @@ def test_full_pipeline_hysteresis_stability_no_second_mechanism_needed(tmp_db):
     # nudge the underlying data slightly (short_term_debt_reserves a hair
     # higher) and rerun for the SAME ref_date -- prev_label() anchors the
     # funding_liquidity engine's hysteresis against its own prior run, so a
-    # small move should not cross the dead-band
+    # small move should not cross the dead-band. Same (date, country,
+    # indicator) key as the original seed (_ARG_LEVEL_DATE) so this is a
+    # revision of that row, not a second, cutoff-excluded one.
     con = get_hub_conn()
     upsert(con, "macro_panel", pd.DataFrame([
-        _pr(dt.date(2026, 12, 31), "ARG", "short_term_debt_reserves", 166.0)]))
+        _pr(_ARG_LEVEL_DATE, "ARG", "short_term_debt_reserves", 166.0)]))
     con.commit()
     con.close()
-    run_dalio_v2(ref_year=2026)
+    run_dalio_v2(ref_date=REF)
 
     con = get_lazyray_conn(read_only=True)
     after = con.execute(
@@ -478,7 +522,7 @@ def test_partial_engine_run_on_a_new_ref_year_does_not_clobber_the_prior_years_c
     con.commit()
     con.close()
 
-    run_dalio_v2(ref_year=2026)   # full run: all 5 engines have 2026 data
+    run_dalio_v2(ref_date=REF)   # full run: all 5 engines have 2026 data
     con = get_lazyray_conn(read_only=True)
     before = con.execute(
         "SELECT dalio_stage, deleveraging_type FROM dalio_cycle_v2 "
@@ -488,7 +532,7 @@ def test_partial_engine_run_on_a_new_ref_year_does_not_clobber_the_prior_years_c
 
     # only sovereign_solvency has ever run for 2027 -- the other 4 engines
     # have zero rows at this ref_date
-    summary = run_dalio_v2(engines=["sovereign_solvency"], ref_year=2027)
+    summary = run_dalio_v2(engines=["sovereign_solvency"], ref_date=dt.date(2027, 12, 31))
     assert summary["cycle_classifier"] is None   # guard skipped the refresh
 
     con = get_lazyray_conn(read_only=True)
@@ -514,8 +558,8 @@ def test_partial_engine_run_still_refreshes_once_all_engines_have_run_for_that_d
     con.commit()
     con.close()
 
-    run_dalio_v2(ref_year=2026)   # all 5 engines now have 2026 rows
-    summary = run_dalio_v2(engines=["sovereign_solvency"], ref_year=2026)
+    run_dalio_v2(ref_date=REF)   # all 5 engines now have 2026 rows
+    summary = run_dalio_v2(engines=["sovereign_solvency"], ref_date=REF)
     assert summary["cycle_classifier"] is not None and summary["cycle_classifier"] >= 1
 
     con = get_lazyray_conn(read_only=True)
@@ -575,7 +619,7 @@ def test_gate_failing_on_rerun_clears_the_stale_classification(tmp_db):
     con.commit()
     con.close()
 
-    run_dalio_v2(ref_year=2026)   # full run: dalio_cycle_v2 gets an ARG row
+    run_dalio_v2(ref_date=REF)   # full run: dalio_cycle_v2 gets an ARG row
     con = get_lazyray_conn(read_only=True)
     before = con.execute(
         "SELECT count(*) FROM dalio_cycle_v2 WHERE ref_date = DATE '2026-12-31'"
@@ -590,7 +634,7 @@ def test_gate_failing_on_rerun_clears_the_stale_classification(tmp_db):
     con.commit()
     con.close()
 
-    summary = run_dalio_v2(engines=["sovereign_solvency"], ref_year=2026)
+    summary = run_dalio_v2(engines=["sovereign_solvency"], ref_date=REF)
     assert summary["cycle_classifier"] is None   # gate failed
 
     con = get_lazyray_conn(read_only=True)

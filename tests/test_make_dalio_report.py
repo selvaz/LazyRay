@@ -108,7 +108,7 @@ def test_collect_with_v2_wires_engine_scores_onto_the_same_country(tmp_db):
     con = get_lazyray_conn()
     con.execute(
         "INSERT INTO engine_scores VALUES ('MEX', DATE '2026-12-31', "
-        "'sovereign_solvency', 55.0, 'watch', 'proxy', 'medium', 5, 7, '{}', now())")
+        "'sovereign_solvency', 55.0, 'watch', 'proxy', 'medium', 5, 7, '{}', now(), NULL, NULL)")
     con.close()
     con = get_lazyray_conn(read_only=True)
     d = mdr.collect(con)

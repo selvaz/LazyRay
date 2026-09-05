@@ -83,15 +83,56 @@ class TestWithoutTheExtra:
         assert "LOADED:" in result.stdout, result.stderr
         assert result.stdout.strip().endswith("LOADED:"), "importing the module pulled LazyTools in"
 
-    def test_dry_run_resolves_the_latest_report(self, reports: Path):
+    def test_dry_run_resolves_the_latest_report(self, reports: Path, tmp_path: Path):
+        # --db points at an isolated, empty temp DuckDB so the dry-run never
+        # touches the repo's real lazyray.duckdb; an empty DB legitimately
+        # produces the Brief's "first run" text (see test_brief.py for the
+        # diffed-Brief case, which needs a seeded DB via tmp_db).
+        db_path = tmp_path / "lazyray.duckdb"
+        brief_dir = tmp_path / "brief"
         result = _run_isolated(
             "import send_telegram_report as m, sys\n"
-            f"sys.argv = ['send_telegram_report.py', '--report-dir', {str(reports)!r}, '--dry-run']\n"
+            f"sys.argv = ['send_telegram_report.py', '--report-dir', {str(reports)!r}, "
+            f"'--brief-dir', {str(brief_dir)!r}, "
+            f"'--db', {str(db_path)!r}, '--dry-run']\n"
             "raise SystemExit(m.main())",
             block_lazytools=True)
         assert result.returncode == 0, result.stderr
+        assert "Would send Brief" in result.stdout
+        assert "Prima corsa: nessun confronto disponibile" in result.stdout
+        # the Brief HTML is attached by default...
+        assert "Would attach Brief HTML" in result.stdout
+        # ...but the OLD full report is not, absent --attach-full/--monthly
+        assert "Full report NOT attached" in result.stdout
         assert "dalio_v2_2026-08-12.html" in result.stdout
-        assert "Would send" in result.stdout
+        assert list(brief_dir.glob("lazyray_brief_*.html")), "Brief HTML was not written"
+
+    def test_dry_run_attaches_full_report_with_the_flag(self, reports: Path, tmp_path: Path):
+        db_path = tmp_path / "lazyray.duckdb"
+        brief_dir = tmp_path / "brief"
+        result = _run_isolated(
+            "import send_telegram_report as m, sys\n"
+            f"sys.argv = ['send_telegram_report.py', '--report-dir', {str(reports)!r}, "
+            f"'--brief-dir', {str(brief_dir)!r}, "
+            f"'--db', {str(db_path)!r}, '--attach-full', '--dry-run']\n"
+            "raise SystemExit(m.main())",
+            block_lazytools=True)
+        assert result.returncode == 0, result.stderr
+        assert "Would also attach full report" in result.stdout
+        assert "dalio_v2_2026-08-12.html" in result.stdout
+
+    def test_the_deprecated_attach_html_flag_is_an_alias(self, reports: Path, tmp_path: Path):
+        db_path = tmp_path / "lazyray.duckdb"
+        brief_dir = tmp_path / "brief"
+        result = _run_isolated(
+            "import send_telegram_report as m, sys\n"
+            f"sys.argv = ['send_telegram_report.py', '--report-dir', {str(reports)!r}, "
+            f"'--brief-dir', {str(brief_dir)!r}, "
+            f"'--db', {str(db_path)!r}, '--attach-html', '--dry-run']\n"
+            "raise SystemExit(m.main())",
+            block_lazytools=True)
+        assert result.returncode == 0, result.stderr
+        assert "Would also attach full report" in result.stdout
 
     def test_asking_to_send_says_what_to_install(self, reports: Path):
         result = _run_isolated(
@@ -152,3 +193,31 @@ def test_the_script_declares_the_extra_it_asks_people_to_install():
     assert any("LazyTools" in item for item in extras["telegram"])
     # And it must not leak into what everyone installs.
     assert not any("lazytool" in item.lower() for item in data["project"]["dependencies"])
+
+
+def test_monthly_auto_attaches_once_per_calendar_month(tmp_path):
+    from datetime import date
+
+    from lazyray.db.connection import get_conn
+
+    import send_telegram_report as m
+
+    db = str(tmp_path / "lazyray.duckdb")
+    con = get_conn(db)
+    try:
+        assert m.monthly_attach_due(con, date(2026, 9, 2))
+    finally:
+        con.close()
+    m.record_send(db, date(2026, 9, 2), attached_full_report=False)
+    con = get_conn(db)
+    try:
+        assert m.monthly_attach_due(con, date(2026, 9, 3))
+    finally:
+        con.close()
+    m.record_send(db, date(2026, 9, 3), attached_full_report=True)
+    con = get_conn(db)
+    try:
+        assert not m.monthly_attach_due(con, date(2026, 9, 30))
+        assert m.monthly_attach_due(con, date(2026, 10, 1))
+    finally:
+        con.close()

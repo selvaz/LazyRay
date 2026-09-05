@@ -49,10 +49,11 @@ export LAZYRAY_DB=/path/to/lazyray.duckdb
 
 ```bash
 # Dalio v2 — 5-engine country risk analysis
-python run_dalio_v2.py                    # refresh scores + regenerate the HTML report
+python run_dalio_v2.py                    # refresh scores + regenerate the HTML report, ref_date = today
 python run_dalio_v2.py --csv              # also write a CSV snapshot
-python run_dalio_v2.py --ref-year 2025
+python run_dalio_v2.py --as-of 2026-08-01  # point-in-time historical run (reads the hub's vintage tables)
 python run_dalio_v2.py --engines sovereign_solvency
+python run_dalio_v2.py --if-changed       # skip (exit 3) if inputs are unchanged since the last run
 
 # Unified v1 + v2 interactive dashboard
 python make_dalio_report.py --calc --calc-v2 --open

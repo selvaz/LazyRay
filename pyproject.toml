@@ -11,6 +11,7 @@ requires-python = ">=3.9"
 license = { text = "Proprietary" }
 authors = [{ name = "Marco Selva" }]
 dependencies = [
+    "hmmlearn>=0.3,<0.4",   # stress monitor: 3-state Gaussian HMM (lazyray/stress/regimes.py)
     "duckdb>=1.0",
     "pandas>=2.0",
     "numpy",
@@ -72,4 +73,4 @@ warn_unused_ignores = true
 include = ["lazyray*"]
 
 [tool.setuptools.package-data]
-lazyray = ["config/*.yaml", "db/schema.sql"]
+lazyray = ["config/*.yaml", "db/*.sql"]
