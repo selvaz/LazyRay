@@ -1,10 +1,21 @@
 # -*- coding: utf-8 -*-
 """
-lock.py — cross-process write lock for LazyRay's own DuckDB file.
+lock.py — cross-process advisory lock for LazyRay's own DuckDB file.
 
-DuckDB allows only a single writer per database file. Mirrors
-market_data_hub.lock's contract: readers (read_only=True) never take this
-lock.
+DuckDB's real rule, measured across processes on the same file: a single
+writer, OR any number of readers -- never a mix. Writer-vs-reader is
+rejected in BOTH directions with a raw IOException at open time, which is
+NOT DBLockTimeout and so is not caught by any of this module's handling.
+
+This is stricter than a plain "only writers need to coordinate" model, so
+every process that opens this file inside these jobs -- including a
+read_only=True reopen purely to render a report -- must take this lock,
+not just the ones that write. A previous version of this docstring claimed
+the opposite ("readers never take this lock"); that contract does not
+hold against DuckDB and was the root cause of repeated writer-vs-reader
+IOException collisions between run_dalio_v2.py's report phase and
+run_stress_monitor.py's writer. Do not reopen this DB file, in any mode,
+outside db_write_lock().
 """
 from __future__ import annotations
 

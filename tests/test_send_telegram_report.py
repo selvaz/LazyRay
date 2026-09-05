@@ -22,6 +22,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import textwrap
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -221,3 +222,82 @@ def test_monthly_auto_attaches_once_per_calendar_month(tmp_path):
         assert m.monthly_attach_due(con, date(2026, 10, 1))
     finally:
         con.close()
+
+
+class _LockSpy:
+    """Stand-in for db_write_lock: counts concurrent holds instead of really
+    locking a file, the same double used in test_dalio_v2_report_lock.py.
+    A depth > 1 would mean two acquisitions overlapped (nesting); this
+    module's main() and record_send() must each take their own, in
+    sequence, never nested."""
+
+    def __init__(self):
+        self.depth = 0
+        self.max_depth = 0
+        self.acquisitions = 0
+
+    @contextmanager
+    def __call__(self, *args, **kwargs):
+        self.depth += 1
+        self.max_depth = max(self.max_depth, self.depth)
+        self.acquisitions += 1
+        try:
+            yield
+        finally:
+            self.depth -= 1
+
+
+def test_main_opens_the_db_under_the_lock_without_nesting_record_send(
+        reports: Path, tmp_path: Path, monkeypatch):
+    """Regression for the line-227 gap: main() used to reopen the DB
+    read-write (for _ensure_brief_html / monthly_attach_due, which
+    CREATE TABLEs digest_log) outside db_write_lock, only record_send()
+    took it. Runs the real main() (--monthly-auto, so monthly_attach_due's
+    CREATE TABLE IF NOT EXISTS actually executes) with db_write_lock and
+    get_conn replaced by spies, and the actual Telegram sends stubbed out
+    (no network, no lazytools required) so record_send() is reached too."""
+    import send_telegram_report as m
+
+    db_path = tmp_path / "lazyray.duckdb"
+    brief_dir = tmp_path / "brief"
+
+    spy = _LockSpy()
+    monkeypatch.setattr(m, "db_write_lock", spy)
+
+    real_get_conn = m.get_conn
+    depths_at_open = []
+
+    def spying_get_conn(*args, **kwargs):
+        depths_at_open.append(spy.depth)
+        return real_get_conn(*args, **kwargs)
+
+    monkeypatch.setattr(m, "get_conn", spying_get_conn)
+
+    sent = []
+    monkeypatch.setattr(m, "send_digest_text",
+                        lambda text, *, token, chat_id: sent.append(("text", text)))
+    monkeypatch.setattr(m, "send_report_document",
+                        lambda path, *, token, chat_id, caption: sent.append(("doc", path)))
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "c")
+
+    monkeypatch.setattr("sys.argv", [
+        "send_telegram_report.py",
+        "--report-dir", str(reports),
+        "--brief-dir", str(brief_dir),
+        "--db", str(db_path),
+        "--monthly-auto",
+    ])
+    rc = m.main()
+    assert rc == 0
+
+    # Two reopens of the DB happen: main()'s own block (line 227) and, inside
+    # it, record_send()'s. Both must see the lock already/again held (depth
+    # 1) -- never 0 (the old bug) and never >1 (nesting).
+    assert depths_at_open == [1, 1]
+    assert spy.max_depth == 1
+    assert spy.acquisitions == 2
+    # Brief text, Brief HTML attachment, and (since --monthly-auto's
+    # monthly_attach_due found no prior send this month, in this fresh DB)
+    # the old full report attachment too.
+    assert [kind for kind, _ in sent] == ["text", "doc", "doc"]
