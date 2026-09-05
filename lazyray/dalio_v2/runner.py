@@ -20,10 +20,16 @@ found an earlier ref_date, so hysteresis was never active). Distinct ref_date
 values now accumulate history; a same-day rerun still replaces only that
 day's (ref_date, engine) batch (DELETE-then-INSERT, unchanged).
 
-if_changed=True compares a SHA-256 hash of the input panel actually used
-against the most recent row in run_meta: if unchanged, the run is skipped
-entirely (no engines computed, nothing written) and the summary carries
-"skipped": True plus "since" (the ref_date the matching hash was last seen
+if_changed=True compares a SHA-256 hash of the input panel actually used,
+the set of engines requested, AND the running code's model_version against
+the most recent row in run_meta: the run is skipped entirely (no engines
+computed, nothing written) only when ALL THREE match -- input, requested
+coverage, and code version alike. Hashing only the input would let a partial
+run (e.g. `--engines sovereign_solvency`) register the current hash and then
+have the next FULL run see that same hash and no-op, leaving the other
+engines and the cycle classification stuck on stale data even though a
+complete recompute was actually requested. On skip the summary carries
+"skipped": True plus "since" (the ref_date the matching row was last seen
 at) -- see run_dalio_v2.py's --if-changed CLI flag for how this maps to a
 distinct process exit code.
 
@@ -134,16 +140,26 @@ def run_dalio_v2(engines: Optional[List[str]] = None,
     with db_write_lock(db_path):
         con = get_conn(db_path)
         try:
+            sha = git_short_sha()
             panel_for_hash = load_panel_ext(ref_date, hub_db_path)
             if not panel_for_hash.empty:
                 panel_for_hash = panel_for_hash[panel_for_hash["indicator_id"].isin(used_indicator_ids())]
             input_hash = _panel_hash(panel_for_hash)
             if if_changed:
+                requested_engines = ",".join(sorted(engines))
                 prev = con.execute(
-                    "SELECT input_hash, ref_date FROM run_meta "
+                    "SELECT input_hash, ref_date, engines, model_version FROM run_meta "
                     "ORDER BY ref_date DESC LIMIT 1").fetchone()
-                if prev is not None and prev[0] == input_hash:
-                    return {"skipped": True, "since": prev[1]}
+                if prev is not None:
+                    prev_hash, prev_ref_date, prev_engines, prev_model_version = prev
+                    # Skip only if the input AND the coverage match: same
+                    # data, same requested engine set, same code version. A
+                    # matching hash from a run that computed a different
+                    # (e.g. smaller) set of engines, or ran under older code,
+                    # must not be treated as a no-op for THIS request.
+                    if (prev_hash == input_hash and prev_engines == requested_engines
+                            and prev_model_version == sha):
+                        return {"skipped": True, "since": prev_ref_date}
 
             # cycle_classifier can legitimately stay None (not 0) when it was
             # skipped for this ref_date -- see the REQUIRED_ENGINES guard below.
@@ -213,7 +229,7 @@ def run_dalio_v2(engines: Optional[List[str]] = None,
                     summary["cycle_classifier"] = None
                 con.execute(
                     "INSERT OR REPLACE INTO run_meta VALUES (?,?,?,?,?,?)",
-                    [ref_date, input_hash, git_short_sha(), ",".join(sorted(engines)),
+                    [ref_date, input_hash, sha, ",".join(sorted(engines)),
                      len(panel_for_hash), datetime.now()])
                 con.execute("COMMIT")
             except Exception:

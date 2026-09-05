@@ -51,3 +51,17 @@ REGIONS = {
 }
 
 SPREAD_LEGS = {"IT-DE": ("IRLTLT01ITM156N", "IRLTLT01DEM156N"), "ES-DE": ("IRLTLT01ESM156N", "IRLTLT01DEM156N"), "FR-DE": ("IRLTLT01FRM156N", "IRLTLT01DEM156N")}
+
+# FRED publishes these three net-liquidity legs on different scales: WALCL
+# and WTREGEN are levels in millions of USD, but RRPONTSYD is published in
+# BILLIONS of USD. Scale every leg to millions before combining them (the
+# net_liquidity_chg_20 composite in stress/pipeline.py) -- without this the
+# RRP leg is understated by 1000x, which quietly erases the 2021-2023 RRP
+# swings (multi-trillion-dollar moves) from the 20-day-change series the
+# expansive percentiles are built on. Add new liquidity legs here, not as an
+# inline magic number at the call site.
+NET_LIQUIDITY_UNIT_SCALE_TO_MILLIONS: dict[str, float] = {
+    "WALCL": 1.0,
+    "WTREGEN": 1.0,
+    "RRPONTSYD": 1000.0,
+}

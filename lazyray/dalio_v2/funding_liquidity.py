@@ -227,8 +227,17 @@ def compute(con: duckdb.DuckDBPyConnection, ref_date, cfg: Optional[dict] = None
         else:
             components = {}
 
+        # raw_by_component feeds ONLY percentile_group (peer comparison),
+        # which assumes higher-raw = worse (see scoring.percentile_group's
+        # docstring) -- flip the one component whose raw scale runs the
+        # other way. term_spread_pp is scored with orientation=-1 above (a
+        # MORE inverted/negative curve is worse), so its raw sign must be
+        # negated here too, same treatment as political_execution's WGI
+        # flip. raw_values itself (the audit trail / Brief-facing dict)
+        # stays untouched -- the true, unflipped spread.
         for comp, v in raw_values.items():
-            raw_by_component.setdefault(comp, {})[country] = v
+            peer_v = -v if (comp == "term_spread_pp" and v is not None) else v
+            raw_by_component.setdefault(comp, {})[country] = peer_v
 
         if branch == "none":
             score, n_avail, n_exp = None, 0, 0

@@ -634,6 +634,43 @@ def test_external_constraint_reserve_currency_vs_fragile_em(tmp_db):
     assert "fx_debt_share" in tur_audit["missing_components"]
 
 
+def test_external_constraint_reserves_months_peer_percentile_is_not_inverted(tmp_db):
+    # F3 regression (Codex review of PR #10): reserves_months is scored with
+    # orientation=-1 (fewer months of import cover is worse), but the peer
+    # percentile (raw_by_component -> percentile_group) fed it the raw,
+    # un-flipped months figure. That put the country with the MOST reserves
+    # (RUS, 16.8 months, in production) at pct_group=100 -- flagged as the
+    # riskiest -- while a country with almost none (LUX, 0.06 months) landed
+    # near the safe end. DEU here plays the thin-reserves country, FRA the
+    # well-reserved one; both DM, so percentile_group ranks them together.
+    rows = [_ec_row(_LEVEL_DATE, "DEU", "fx_reserves_months_imports", 0.5),
+            _ec_row(_LEVEL_DATE, "FRA", "fx_reserves_months_imports", 10.0)]
+    con = get_hub_conn()
+    upsert(con, "macro_panel", pd.DataFrame(rows))
+    con.commit()
+    con.close()
+
+    run_dalio_v2(engines=["external_constraint"], ref_date=dt.date(2026, 12, 31))
+
+    con = get_lazyray_conn(read_only=True)
+    scores = con.execute(
+        "SELECT country_iso3, components_json FROM engine_scores "
+        "WHERE engine = 'external_constraint' AND country_iso3 IN ('DEU', 'FRA')").fetch_df()
+    con.close()
+    audit = {r.country_iso3: json.loads(r.components_json) for r in scores.itertuples()}
+
+    deu_resm = audit["DEU"]["components"]["reserves_months"]
+    fra_resm = audit["FRA"]["components"]["reserves_months"]
+    assert deu_resm["raw_value"] == 0.5 and fra_resm["raw_value"] == 10.0
+    # the thin-reserves country (DEU) must rank RISKIER (higher pct_group)
+    # than the well-reserved one (FRA), not the other way around
+    assert deu_resm["pct_group"] > fra_resm["pct_group"]
+    assert deu_resm["pct_group"] == 100.0 and fra_resm["pct_group"] == 50.0
+    # raw_values/audit trail must stay the TRUE, unflipped months-of-reserves
+    # figure -- only the internal peer-percentile input is negated
+    assert deu_resm["raw_value"] == 0.5
+
+
 # ---------------------------------------------------------------------------
 # Funding Liquidity: branch split (market / external / none), WP2 deliverable
 # C -- never 'full' coverage in any branch, that's still a structural cap.
@@ -696,6 +733,47 @@ def test_funding_liquidity_market_branch(tmp_db):
     # yield_change_12m_pp alone is enough to score the branch
     assert "yield_change_12m_pp" not in ita_audit["missing_components"]
     assert {"term_spread_pp", "reer_change_12m_pct"} <= set(ita_audit["missing_components"])
+
+
+def test_funding_liquidity_term_spread_peer_percentile_is_not_inverted(tmp_db):
+    # F3 regression (Codex review of PR #10): term_spread_pp is scored with
+    # orientation=-1 (a MORE inverted/negative curve is worse), but the peer
+    # percentile (raw_by_component -> percentile_group) fed it the raw,
+    # un-flipped spread. That put the country with the deeply inverted curve
+    # (HUN, -0.49pp, in production) at pct_group=20 -- near the SAFE end --
+    # while the widest positive spread (MEX, +2.95pp) landed at 100, the
+    # riskiest. DEU here plays the inverted-curve country, ITA the normal
+    # positive-curve one; both DM, so percentile_group ranks them together.
+    rows = [
+        _fl_row(dt.date(2026, 6, 30), "DEU", "bond_yield_10y", 1.0),
+        _fl_row(dt.date(2026, 6, 30), "DEU", "bis_policy_rate", 3.0),   # term_spread = -2.0 (inverted)
+        _fl_row(dt.date(2026, 6, 30), "ITA", "bond_yield_10y", 5.0),
+        _fl_row(dt.date(2026, 6, 30), "ITA", "bis_policy_rate", 3.0),   # term_spread = +2.0 (normal)
+    ]
+    con = get_hub_conn()
+    upsert(con, "macro_panel", pd.DataFrame(rows))
+    con.commit()
+    con.close()
+
+    run_dalio_v2(engines=["funding_liquidity"], ref_date=dt.date(2026, 12, 31))
+
+    con = get_lazyray_conn(read_only=True)
+    scores = con.execute(
+        "SELECT country_iso3, components_json FROM engine_scores "
+        "WHERE engine = 'funding_liquidity' AND country_iso3 IN ('DEU', 'ITA')").fetch_df()
+    con.close()
+    audit = {r.country_iso3: json.loads(r.components_json) for r in scores.itertuples()}
+
+    deu_spread = audit["DEU"]["components"]["term_spread_pp"]
+    ita_spread = audit["ITA"]["components"]["term_spread_pp"]
+    assert deu_spread["raw_value"] == -2.0 and ita_spread["raw_value"] == 2.0
+    # the inverted curve (DEU) must rank RISKIER (higher pct_group) than the
+    # normal positive curve (ITA), not the other way around
+    assert deu_spread["pct_group"] > ita_spread["pct_group"]
+    assert deu_spread["pct_group"] == 100.0 and ita_spread["pct_group"] == 50.0
+    # raw_values/audit trail must stay the TRUE, unflipped spread -- only the
+    # internal peer-percentile input is negated, never what the user sees
+    assert deu_spread["raw_value"] == -2.0
 
 
 def _seed_funding_liquidity_external(con):

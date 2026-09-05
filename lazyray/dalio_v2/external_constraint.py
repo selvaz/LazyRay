@@ -319,8 +319,17 @@ def compute(con: duckdb.DuckDBPyConnection, ref_date, cfg: Optional[dict] = None
                 s_resm, raw_values["reserves_months"], resm_dt, -1, _OWN_HISTORY_MIN_OBS),
         }
 
+        # raw_by_component feeds ONLY percentile_group (peer comparison),
+        # which assumes higher-raw = worse (see scoring.percentile_group's
+        # docstring) -- flip the one component whose raw scale runs the
+        # other way. reserves_months is scored with orientation=-1 above
+        # (fewer months of import cover is worse), so its raw sign must be
+        # negated here too, same treatment as political_execution's WGI
+        # flip. raw_values itself (the audit trail / Brief-facing dict)
+        # stays untouched -- the true, unflipped months-of-reserves figure.
         for comp, v in raw_values.items():
-            raw_by_component.setdefault(comp, {})[country] = v
+            peer_v = -v if (comp == "reserves_months" and v is not None) else v
+            raw_by_component.setdefault(comp, {})[country] = peer_v
 
         records.append(dict(
             country=country, score=score, label=label, tier=tier, conf=conf,

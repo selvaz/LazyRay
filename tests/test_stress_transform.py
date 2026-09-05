@@ -37,6 +37,33 @@ def test_aggregation_is_bounded_and_rewards_comovement():
     assert co.iloc[-1] > anti.iloc[-1]
 
 
+def test_aggregation_state_is_covariance_not_recycled_correlation():
+    # F2 regression: the EWMA state carried between iterations must be an
+    # actual covariance, not last period's *normalized* correlation fed back
+    # in (the bug -- see transform.ewma_correlation_index's docstring/
+    # comments). Reusing corr as state re-anchors variance toward 1 every
+    # step and never lets correlation relax away from the initial
+    # full-comovement assumption, so the index systematically overstates
+    # comovement once two segments that moved together during a crisis
+    # decouple into genuinely independent noise afterward.
+    rng = np.random.default_rng(1)
+    crisis = np.linspace(.1, .9, 60)
+    noise_a = np.clip(.3 + rng.normal(0, .15, 300), 0, 1)
+    noise_b = np.clip(.3 + rng.normal(0, .15, 300), 0, 1)
+    a = np.r_[crisis, noise_a]
+    b = np.r_[crisis, noise_b]
+    dates = pd.date_range("2020-01-01", periods=len(a), freq="B")
+    frame = pd.DataFrame({"a": a, "b": b}, index=dates)
+    weights = pd.Series({"a": .5, "b": .5})
+    result = ewma_correlation_index(frame, weights)
+    # With the bug, the recycled-correlation state stayed anchored near the
+    # crisis's full comovement (measured directly: implied corr(a,b) = 0.71,
+    # last-90-day mean index = 0.265). A real covariance recursion lets both
+    # relax toward the segments' true near-zero correlation once they
+    # decouple (measured: implied corr = 0.32, last-90-day mean = 0.217).
+    assert result.iloc[-90:].mean() < 0.25
+
+
 def test_aggregation_requires_a_segment_and_handles_full_stress():
     dates = pd.date_range("2020-01-01", periods=2, freq="B")
     weights = pd.Series({"a": .5, "b": .5})
