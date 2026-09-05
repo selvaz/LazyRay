@@ -7,7 +7,7 @@ import tempfile
 from datetime import date
 
 from lazyray.db.connection import get_conn
-from lazyray.lock import DBLockTimeout
+from lazyray.lock import DBLockTimeout, db_write_lock
 from lazyray.stress.config import REGIONS
 from lazyray.stress.digest import build_digest, should_notify
 from lazyray.stress.persist import apply_schema
@@ -42,37 +42,50 @@ def main() -> int:
         p.error(f"unknown region(s): {', '.join(sorted(unknown))}")
     try:
         result = run_monitor(regions, hub_db=args.hub_db, db_path=args.db, as_of=args.as_of, write=not args.dry_run)
+        if args.dry_run:
+            # Use the normal persistence/digest path in a disposable database
+            # so operators preview precisely the message a real run would
+            # produce. Disposable + never contended, so no lock needed here.
+            with tempfile.TemporaryDirectory() as directory:
+                preview_db = os.path.join(directory, "stress-preview.duckdb")
+                from lazyray.stress.persist import write_results
+                write_results(result["index_rows"], result["components"], preview_db)
+                con = get_conn(preview_db)
+                try:
+                    print(build_digest(con, regions, args.as_of))
+                finally:
+                    con.close()
+            print("missing: " + repr(result["missing"]))
+            return 0
+        # run_monitor() takes and releases the write lock internally (via
+        # persist.write_results), so by the time we get here it is free.
+        # This block reopens the same DuckDB file -- apply_schema() is a
+        # write (CREATE/ALTER) -- so it needs its own, separate acquisition
+        # of the same lock. Nesting it around run_monitor would deadlock
+        # (the lock isn't reentrant); taking it here, after run_monitor has
+        # returned, is what keeps this second reopen inside the same
+        # DBLockTimeout handling as the first.
+        with db_write_lock(args.db):
+            con = get_conn(args.db)
+            try:
+                apply_schema(con)
+                digest = build_digest(con, regions, args.as_of)
+                print(digest)
+                warranted = should_notify(con, args.as_of)
+            finally:
+                con.close()
     except DBLockTimeout as exc:
         # The sibling ray_dalio_v2 job writes the same DuckDB file and can
         # still hold the lock when the two are triggered close together
         # (e.g. StartWhenAvailable catching up after a weekend). This
         # monitor recomputes every region's full history on each run, so a
         # skipped run loses nothing -- the next run rebuilds it all,
-        # including today. Exit 3 ("nothing to do"), not a red task.
+        # including today. Exit 3 ("nothing to do"), not a red task. This
+        # holds whether the contention hits while run_monitor is writing or
+        # while this command is only reopening the file to read the digest:
+        # either way the rows (if any) are already committed and safe.
         print(f"{exc} The next run recomputes the full history, so nothing is lost.")
         return 3
-    if args.dry_run:
-        # Use the normal persistence/digest path in a disposable database so
-        # operators preview precisely the message a real run would produce.
-        with tempfile.TemporaryDirectory() as directory:
-            preview_db = os.path.join(directory, "stress-preview.duckdb")
-            from lazyray.stress.persist import write_results
-            write_results(result["index_rows"], result["components"], preview_db)
-            con = get_conn(preview_db)
-            try:
-                print(build_digest(con, regions, args.as_of))
-            finally:
-                con.close()
-        print("missing: " + repr(result["missing"]))
-        return 0
-    con = get_conn(args.db)
-    try:
-        apply_schema(con)
-        digest = build_digest(con, regions, args.as_of)
-        print(digest)
-        warranted = should_notify(con, args.as_of)
-    finally:
-        con.close()
     if args.notify or args.force_notify:
         if args.force_notify or warranted:
             _send(digest)

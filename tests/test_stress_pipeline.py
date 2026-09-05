@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 import run_stress_monitor as command
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 from uuid import uuid4
 
@@ -149,6 +150,36 @@ def test_lock_contention_skips_with_exit_3_not_a_traceback(monkeypatch, capsys):
     def locked(*args, **kwargs):
         raise DBLockTimeout("Another writer holds the DB lock (fake.lock); skipping this run.")
     monkeypatch.setattr(command, "run_monitor", locked)
+    monkeypatch.setattr(sys, "argv", ["run_stress_monitor.py", "--region", "us", "--db", "unused.duckdb"])
+    assert command.main() == 3
+    out = capsys.readouterr().out
+    assert "Another writer holds the DB lock" in out
+    assert "recomputes the full history" in out
+
+
+def test_lock_contention_after_run_monitor_still_skips_with_exit_3(monkeypatch, capsys):
+    # Regression for the gap left by test_lock_contention_skips_with_exit_3_not_a_traceback:
+    # that test only covers contention while run_monitor() itself holds the lock. But
+    # persist.write_results acquires and releases the lock *inside* run_monitor, so by the
+    # time run_monitor() returns here it is already free. The digest block right after
+    # (get_conn + apply_schema + build_digest + should_notify) reopens the same DuckDB file
+    # unprotected and, if a sibling writer grabs the lock in that gap, used to raise a raw
+    # DuckDB locking error instead of DBLockTimeout -- escaping this except clause and
+    # turning the scheduled task red in exactly the StartWhenAvailable catch-up scenario the
+    # original fix targeted. Simulate that second-phase contention directly on
+    # command.db_write_lock (the reference the digest block now takes) and confirm it still
+    # degrades to a clean exit 3 with the same message, not a propagated exception.
+    monkeypatch.setattr(
+        command, "run_monitor",
+        lambda *a, **kw: {"index_rows": [], "components": [], "missing": {"us": []}},
+    )
+
+    @contextmanager
+    def contended_after_run_monitor(*args, **kwargs):
+        raise DBLockTimeout("Another writer holds the DB lock (fake.lock); skipping this run.")
+        yield  # pragma: no cover - unreachable; keeps this a generator for @contextmanager
+
+    monkeypatch.setattr(command, "db_write_lock", contended_after_run_monitor)
     monkeypatch.setattr(sys, "argv", ["run_stress_monitor.py", "--region", "us", "--db", "unused.duckdb"])
     assert command.main() == 3
     out = capsys.readouterr().out
