@@ -63,28 +63,15 @@ def main() -> int:
         # write_results already ran apply_schema unconditionally under the
         # lock above (inside run_monitor), so the schema is guaranteed to
         # exist here -- reapplying it in this block would be redundant.
-        # That said, this block still opens the connection read_only=True
-        # AND still takes db_write_lock around it, which looks like taking
-        # a writer lock just to read. It is not redundant: DuckDB's own
-        # single-writer-or-many-readers rule is stricter than what the
-        # advisory lock models. lock.py's contract has readers skip the
-        # lock entirely, so a reader outside the lock and a writer inside
-        # it still collide at the file level with a raw IOException that
-        # DBLockTimeout does not catch -- exactly what happens when the
-        # sibling ray_dalio_v2 job opens its own read-only report
-        # connection (run_dalio_v2.py:106, deliberately outside its lock)
-        # while this monitor reopens the file to write. Taking the lock
-        # here turns that case into one of the two outcomes DuckDB
-        # actually allows:
-        #   - Dalio is writing (holds the lock): we block on the lock and
-        #     get DBLockTimeout, already handled below with exit 3.
-        #   - Dalio is reading (outside the lock): we acquire the lock and
-        #     open read_only=True, so its reader and our reader coexist --
-        #     DuckDB always allows multiple simultaneous readers.
-        #   - nobody else is active: normal case.
-        # Opening this connection read-write instead would leave the
-        # middle case broken -- a writer colliding with Dalio's unlocked
-        # reader -- which is the defect this fix closes.
+        # It still takes db_write_lock even though it only reads, because
+        # DuckDB's rule -- one writer, or several readers -- is stricter
+        # than "writers exclude writers": a reader and a writer refuse each
+        # other in either direction, with an IOException at open that no
+        # DBLockTimeout handler sees. The lock is therefore the coordination
+        # point for every open of this file, in either mode, and every
+        # opener in the scheduled chain now goes through it (see
+        # lazyray/lock.py). Any contention here surfaces as DBLockTimeout,
+        # handled below with exit 3.
         with db_write_lock(args.db):
             con = get_conn(args.db, read_only=True)
             try:
