@@ -44,6 +44,34 @@ def test_pipeline_writes_digest_and_notification(monkeypatch):
                 path.unlink()
 
 
+def test_net_liquidity_composite_scales_rrp_to_millions_before_combining(monkeypatch):
+    # F1 regression: FRED publishes RRPONTSYD in BILLIONS of USD while WALCL
+    # and WTREGEN are in MILLIONS (config.NET_LIQUIDITY_UNIT_SCALE_TO_MILLIONS).
+    # A raw subtraction understates a real RRP move 1000x. Here RRPONTSYD
+    # jumps from 0 to 2500 (i.e. a $2.5 TRILLION build-up, in billions); the
+    # resulting 20-business-day net-liquidity change must show up scaled to
+    # millions (~2,500,000), not the raw billions figure (~2,500) a
+    # unit-blind subtraction would produce.
+    dates = pd.date_range("2020-01-01", periods=30, freq="W-MON")
+    rrp = pd.Series(0.0, index=dates)
+    rrp.iloc[15:] = 2500.0
+    macro = pd.DataFrame({
+        "WALCL": pd.Series(7_000_000.0, index=dates),
+        "WTREGEN": pd.Series(500_000.0, index=dates),
+        "RRPONTSYD": rrp,
+    })
+    region = Region("test_liq", (Segment("liquidity", 1.0, (Indicator(
+        "net_liquidity_chg_20", "composite", "net_liquidity_chg_20",
+        ("WALCL", "WTREGEN", "RRPONTSYD"), "weekly"),)),))
+    monkeypatch.setitem(__import__("lazyray.stress.pipeline", fromlist=["REGIONS"]).REGIONS, "test_liq", region)
+    monkeypatch.setattr("lazyray.stress.pipeline._reader", lambda: (
+        lambda ids, **kwargs: macro.reindex(columns=ids), lambda ids, **kwargs: pd.DataFrame(index=dates)))
+    _, components, missing, _ = compute_region("test_liq", as_of=dates[-1].date(), min_obs=1)
+    assert missing == []
+    values = [v for _, _, _, _, v, _ in components if v != 0]
+    assert values and all(abs(v) == 2_500_000.0 for v in values)
+
+
 def test_missing_indicator_degrades_and_monthly_staleness_blanks(monkeypatch):
     dates = pd.date_range("2020-01-01", "2020-03-31", freq="B")
     macro = pd.DataFrame({"present": np.arange(len(dates), dtype=float), "monthly": np.nan}, index=dates)

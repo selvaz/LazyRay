@@ -44,20 +44,33 @@ def ewma_correlation_index(segments: pd.DataFrame, weights: pd.Series, lam: floa
     """CISS-style EWMA correlation aggregation, bounded by zero and one."""
     frame = segments.astype(float).copy()
     result = pd.Series(np.nan, index=frame.index, dtype=float)
-    # With no observed covariance yet, equal simultaneous segment shocks are
-    # treated as fully comoving rather than arbitrarily independent.
-    corr = np.ones((frame.shape[1], frame.shape[1]))
-    mean = np.zeros(frame.shape[1])
+    n = frame.shape[1]
+    # The state carried between iterations must be an actual (unnormalized)
+    # covariance matrix, not the correlation derived from it -- feeding
+    # yesterday's *normalized* corr back into today's EWMA re-normalizes
+    # variances toward 1 on every step, so correlations never relax away
+    # from perfect comovement (Holló-Kremer-Lo Duca 2012 keeps covariance,
+    # not correlation, as the EWMA state; corr is derived from it only at
+    # the point of use).
+    # Initialization choice: with no observed covariance yet, start from the
+    # all-ones matrix (unit variances, unit covariances). This is the
+    # (rank-1) covariance whose implied correlation is itself all-ones, so
+    # equal simultaneous segment shocks are still read as fully comoving
+    # before any real co-movement has been observed -- the same property the
+    # previous code intended, now expressed as a real covariance rather than
+    # smuggling the normalized correlation matrix through the recursion.
+    cov = np.ones((n, n))
+    mean = np.zeros(n)
     for date, row in frame.iterrows():
         values = row.to_numpy(float)
         present = np.isfinite(values)
         if not present.any():
             continue
-        # Update a stable EWMA correlation with neutral values for unavailable segments.
+        # Update a stable EWMA covariance with neutral values for unavailable segments.
         x = np.where(present, values, mean)
         mean = lam * mean + (1 - lam) * x
         centered = x - mean
-        cov = lam * corr + (1 - lam) * np.outer(centered, centered)
+        cov = lam * cov + (1 - lam) * np.outer(centered, centered)
         scale = np.sqrt(np.maximum(np.diag(cov), 1e-12))
         corr = np.clip(cov / np.outer(scale, scale), -1, 1)
         np.fill_diagonal(corr, 1)

@@ -167,6 +167,51 @@ def test_if_changed_skips_on_identical_inputs_and_runs_on_changed_inputs(tmp_db)
     assert summary3["sovereign_solvency"] == 1
 
 
+def _mock_compute_for(engine_name):
+    def _compute(con, ref_date, cfg=None, hub_db_path=None):
+        row = ("ZZZ", ref_date, engine_name, 41.0, "watch", "full", "high",
+              7, 7, "{}", datetime.now(timezone.utc), None, None)
+        return pd.DataFrame([row], columns=_COLUMNS)
+    return _compute
+
+
+def test_if_changed_does_not_skip_when_requested_engine_set_differs(tmp_db, monkeypatch):
+    # F4 regression (docs/DALIO_PROD_ASSESSMENT_2026-09.md / Codex review of
+    # PR #10): a PARTIAL run (--engines sovereign_solvency) registers the
+    # current input hash in run_meta. A later FULL run with unchanged hub
+    # data must NOT be treated as a no-op just because the hash matches --
+    # it is asking for MORE coverage (political_execution too) than the run
+    # that hash was actually computed under, so it must proceed and compute
+    # every requested engine, not skip and leave political_execution/
+    # cycle_classifier stuck on stale (or absent) data.
+    monkeypatch.setitem(runner._ENGINES, "sovereign_solvency", _mock_compute_for("sovereign_solvency"))
+    monkeypatch.setitem(runner._ENGINES, "political_execution", _mock_compute_for("political_execution"))
+
+    con = get_hub_conn()
+    upsert(con, "macro_panel", pd.DataFrame([
+        _row(dt.date(2025, 12, 31), "USA", "public_debt_gdp", 50.0),
+    ]))
+    con.commit()
+    con.close()
+
+    summary1 = run_dalio_v2(engines=["sovereign_solvency"], ref_date=_DAY1, if_changed=True)
+    assert not summary1.get("skipped")
+
+    # unchanged hub data, but this run asks for BOTH engines -- must run,
+    # not skip, even though the input hash alone matches DAY1's.
+    summary2 = run_dalio_v2(engines=["sovereign_solvency", "political_execution"],
+                            ref_date=_DAY2, if_changed=True)
+    assert not summary2.get("skipped")
+    assert summary2["sovereign_solvency"] == 1
+    assert summary2["political_execution"] == 1
+
+    con = get_lazyray_conn(read_only=True)
+    n_day2 = con.execute(
+        "SELECT count(*) FROM engine_scores WHERE ref_date = ?", [_DAY2]).fetchone()[0]
+    con.close()
+    assert n_day2 == 2
+
+
 def test_if_changed_false_always_runs_regardless_of_hash(tmp_db):
     con = get_hub_conn()
     upsert(con, "macro_panel", pd.DataFrame([

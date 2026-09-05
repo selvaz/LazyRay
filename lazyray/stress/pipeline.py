@@ -5,7 +5,7 @@ from datetime import date
 
 import pandas as pd
 
-from .config import REGIONS, SPREAD_LEGS
+from .config import NET_LIQUIDITY_UNIT_SCALE_TO_MILLIONS, REGIONS, SPREAD_LEGS
 from .regimes import fit_regimes
 from .transform import business_daily, expanding_cdf, ewma_correlation_index
 
@@ -93,7 +93,11 @@ def compute_region(region_name: str, *, hub_db=None, as_of=None, min_obs: int = 
                     if daily_inputs.empty or daily_inputs.isna().all().any():
                         raise KeyError(ind.name)
                     if ind.transform == "net_liquidity_chg_20":
-                        daily = -(daily_inputs["WALCL"] - daily_inputs["WTREGEN"] - daily_inputs["RRPONTSYD"]).diff(20)
+                        # Bring every leg to a common unit (millions of USD)
+                        # before combining -- see config.NET_LIQUIDITY_UNIT_SCALE_TO_MILLIONS
+                        # for why RRPONTSYD alone needs the x1000.
+                        scaled = daily_inputs.mul(pd.Series(NET_LIQUIDITY_UNIT_SCALE_TO_MILLIONS))
+                        daily = -(scaled["WALCL"] - scaled["WTREGEN"] - scaled["RRPONTSYD"]).diff(20)
                     else:
                         raise ValueError(f"unknown composite transform {ind.transform}")
                 else:
