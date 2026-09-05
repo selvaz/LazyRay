@@ -36,7 +36,7 @@ _WINSOR_LOW, _WINSOR_HIGH = 0.05, 0.95
 
 def _winsorize(x: np.ndarray) -> np.ndarray:
     lo, hi = np.quantile(x, [_WINSOR_LOW, _WINSOR_HIGH])
-    return np.clip(x, lo, hi)
+    return np.asarray(np.clip(x, lo, hi))
 
 
 def build_annual_history(r_by_year: dict, g_by_year: dict, pb_by_year: dict,

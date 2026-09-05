@@ -51,7 +51,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 import duckdb
 import pandas as pd
@@ -249,7 +249,10 @@ def compute(con: duckdb.DuckDBPyConnection, ref_date, cfg: Optional[dict] = None
 
     sha = git_short_sha()
     now = datetime.now(timezone.utc)
-    rows_out = []
+    # dalio_stage/deleveraging_type are genuinely Optional[str] (both rows
+    # below can carry either a real stage or None); country/ref_date stay Any
+    # since _engine_rows()/compute()'s own signatures leave them untyped.
+    rows_out: list[tuple[Any, Any, Optional[str], Optional[str], str, str, str, str, datetime]] = []
     for country, rows in by_country.items():
         # funding_liquidity's branch=none/coverage_tier='no_data' (WP2,
         # docs/DALIO_PROD_ASSESSMENT_2026-09.md Sec.3.1.7: 14 countries with

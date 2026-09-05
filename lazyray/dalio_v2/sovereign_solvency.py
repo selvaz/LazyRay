@@ -86,7 +86,7 @@ def _annual_series(df: "Optional[pd.DataFrame]") -> dict:
         return {}
     d = df.dropna(subset=["value"]).copy()
     d["year"] = pd.to_datetime(d["date"]).dt.year
-    return d.sort_values("date").groupby("year")["value"].last().to_dict()
+    return dict(d.sort_values("date").groupby("year")["value"].last().to_dict())
 
 
 def _annual_fallback_series(by_ind: dict, ids, cutoff) -> dict:

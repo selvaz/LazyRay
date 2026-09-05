@@ -242,7 +242,7 @@ def _engine_rows_df(con: duckdb.DuckDBPyConnection, ref_date) -> pd.DataFrame:
         [ref_date]).fetch_df()
 
 
-def _prev_ref_date(con: duckdb.DuckDBPyConnection, ref_date) -> Optional[object]:
+def _prev_ref_date(con: duckdb.DuckDBPyConnection, ref_date) -> Optional[_date]:
     row = con.execute(
         "SELECT max(ref_date) FROM engine_scores WHERE ref_date < ?", [ref_date]
     ).fetchone()
@@ -253,11 +253,11 @@ def _model_version(con: duckdb.DuckDBPyConnection, ref_date, cur: pd.DataFrame) 
     row = con.execute("SELECT model_version FROM run_meta WHERE ref_date = ?",
                       [ref_date]).fetchone()
     if row and row[0]:
-        return row[0]
+        return str(row[0])
     for js in cur["components_json"]:
         v = _audit(js).get("model_version")
         if v:
-            return v
+            return str(v)
     return "unknown"
 
 
@@ -458,7 +458,9 @@ def _build_watchlist(countries: "list[CountryRow]") -> "list[WatchItem]":
             if cell and cell.label and cell.label in _top_two_labels(engine):
                 reasons.append(f"{ENGINE_SHORT[engine]} {cell.label}")
         if dsa_is_material(c):
-            reasons.append(f"dsa {c.dsa['p_up'] * 100:.0f}%")
+            dsa = c.dsa
+            assert dsa is not None  # dsa_is_material(c) already proved c.dsa is truthy
+            reasons.append(f"dsa {dsa['p_up'] * 100:.0f}%")
         pol = c.engines.get("political_execution")
         if reasons and pol and pol.label and pol.label in _top_two_labels("political_execution"):
             reasons.append(f"political {pol.label}")

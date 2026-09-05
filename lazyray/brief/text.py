@@ -61,7 +61,13 @@ _MAX_DSA = 6
 
 
 def _dsa_line(data: BriefData) -> "str | None":
-    hits = [(c.iso3, c.dsa["p_up"]) for c in data.countries if dsa_is_material(c, 0.6)]
+    hits: list[tuple[str, float]] = []
+    for c in data.countries:
+        if not dsa_is_material(c, 0.6):
+            continue
+        dsa = c.dsa
+        assert dsa is not None  # dsa_is_material(c, 0.6) already proved c.dsa is truthy
+        hits.append((c.iso3, dsa["p_up"]))
     if not hits:
         return None
     hits.sort(key=lambda x: -x[1])

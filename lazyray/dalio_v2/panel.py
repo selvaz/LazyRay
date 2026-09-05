@@ -64,7 +64,7 @@ def used_asof_path(ref_date) -> bool:
     the decision here (rather than re-deriving `< date.today()` inline in
     five places) guarantees the flag and the actual read path never drift
     apart."""
-    return ref_date < _date.today()
+    return bool(ref_date < _date.today())
 
 
 def _empty_ext() -> pd.DataFrame:

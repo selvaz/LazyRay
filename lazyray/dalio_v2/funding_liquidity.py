@@ -167,7 +167,7 @@ def compute(con: duckdb.DuckDBPyConnection, ref_date, cfg: Optional[dict] = None
         raw_values: "dict[str, Optional[float]]" = {}
         obs_dates: "dict[str, Optional[str]]" = {}
         pct_own_history: "dict[str, Optional[float]]" = {}
-        active_components = ()
+        active_components: tuple[str, ...] = ()
 
         if branch == "market":
             active_components = _MARKET_COMPONENTS
@@ -190,11 +190,17 @@ def compute(con: duckdb.DuckDBPyConnection, ref_date, cfg: Optional[dict] = None
             # change itself" series is assembled, see module docstring's
             # scope note; own-history percentile stays None for this branch.
             pct_own_history = {k: None for k in active_components}
+            # Named locals (not *unpack) because orientation= follows: an unpack
+            # plus a keyword both landing on the same positional slot is a
+            # latent bug -- a 4-entry config would pass orientation twice and
+            # raise at runtime (today's settings.yaml has exactly 3, so it's
+            # never been hit).
+            watch, stress_thr, critical = th.get("term_spread_pp", [1.0, 0.0, -1.0])
             components = {
                 "yield_change_12m_pp": None if yield_change is None else
                     score_threshold(yield_change, *th.get("yield_change_12m_pp", [1.0, 2.0, 3.5])),
                 "term_spread_pp": None if term_spread is None else
-                    score_threshold(term_spread, *th.get("term_spread_pp", [1.0, 0.0, -1.0]), orientation=-1),
+                    score_threshold(term_spread, watch, stress_thr, critical, -1),
                 "reer_change_12m_pct": None if reer_change is None else
                     score_threshold(reer_change, *th.get("reer_change_12m_pct", [10.0, 15.0, 25.0])),
             }

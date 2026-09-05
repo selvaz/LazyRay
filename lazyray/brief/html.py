@@ -35,7 +35,7 @@ def _humanize(s: Optional[str]) -> str:
 def _num(v, fmt="{:.1f}") -> str:
     if v is None or (isinstance(v, float) and v != v):  # NaN != NaN
         return "n/d"
-    return fmt.format(v)
+    return str(fmt.format(v))
 
 
 _STYLE = """
@@ -311,17 +311,17 @@ def _changes_section_html(data: BriefData) -> str:
         else:
             parts.append('<p class="muted">Nessuna etichetta cambiata.</p>')
         if ch.stage_changes:
-            items = "".join(
+            stage_items_html = "".join(
                 f'<li>{c.country}: {_esc(_humanize(c.old_stage))} -&gt; '
                 f'{_esc(_humanize(c.new_stage))}</li>' for c in ch.stage_changes)
-            parts.append(f'<p><strong>Cambi di fase</strong></p><ul class="plain">{items}</ul>')
+            parts.append(f'<p><strong>Cambi di fase</strong></p><ul class="plain">{stage_items_html}</ul>')
         if ch.movers:
-            items = "".join(
+            mover_items_html = "".join(
                 f'<li>{m.country} {_ENGINE_LABEL_IT.get(m.engine, m.engine)}: '
                 f'{_num(m.old_score)} -&gt; {_num(m.new_score)} ({m.delta:+.1f})'
                 f'{" (" + _esc(m.component) + ")" if m.component else ""}</li>'
                 for m in ch.movers)
-            parts.append(f'<p><strong>Movimenti maggiori</strong></p><ul class="plain">{items}</ul>')
+            parts.append(f'<p><strong>Movimenti maggiori</strong></p><ul class="plain">{mover_items_html}</ul>')
         else:
             parts.append(
                 '<p><strong>Movimenti maggiori</strong><br>Nessun movimento materiale: i dati '

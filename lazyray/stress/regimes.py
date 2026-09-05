@@ -8,7 +8,7 @@ import pandas as pd
 def hysteresis_labels(probabilities) -> list[str]:
     """Enter stress at .60 and remain there until probability reaches .40."""
     label = "calm"
-    labels = []
+    labels: list[str] = []
     for p in probabilities:
         if p >= .6:
             label = "stress"
@@ -18,9 +18,10 @@ def hysteresis_labels(probabilities) -> list[str]:
     return labels
 
 
-def percentile_labels(index: pd.Series, min_history: int = 756) -> list[str]:
+def percentile_labels(index: pd.Series, min_history: int = 756) -> list[str | None]:
     """No-look-ahead expanding-percentile labels with three-tier hysteresis."""
-    label, labels, seen = "calm", [], []
+    label, seen = "calm", []
+    labels: list[str | None] = []
     for value in index:
         if pd.isna(value):
             labels.append(None)

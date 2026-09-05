@@ -129,7 +129,9 @@ def compute_region(region_name: str, *, hub_db=None, as_of=None, min_obs: int = 
 
 def run_monitor(regions=("us", "ea", "em"), *, hub_db=None, db_path=None, as_of=None, write=True, min_obs: int = 756):
     """Recompute every requested region's history, optionally persisting it."""
-    all_index, all_components, missing = [], [], {}
+    all_index: list[tuple[date, str, float, float, str, str, int]] = []
+    all_components: list[tuple[date, str, str, str, float, float]] = []
+    missing: dict[str, list[str]] = {}
     for region in regions:
         output, components, absent, _ = compute_region(region, hub_db=hub_db, as_of=as_of, min_obs=min_obs)
         missing[region] = absent
