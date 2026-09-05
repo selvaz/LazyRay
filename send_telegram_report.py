@@ -161,8 +161,21 @@ def record_send(db_path: Any, ref_date: date, attached_full_report: bool) -> Non
         con = get_conn(db_path)
         try:
             con.execute(_DIGEST_LOG_DDL)
-            con.execute("INSERT OR REPLACE INTO digest_log VALUES (?, ?, current_timestamp)",
-                        [ref_date, attached_full_report])
+            # The row means "the monthly attachment has already gone out for
+            # this ref_date's month" -- not "the most recent send happened to
+            # carry it". A plain INSERT OR REPLACE overwrites the whole row,
+            # so a later same-day send without --attach-full/--monthly would
+            # flip attached_html back to False and erase that memory, and
+            # monthly_attach_due would send the attachment again. OR the new
+            # value with whatever is already stored so True can only ever be
+            # confirmed, never downgraded; sent_at still tracks the latest
+            # send regardless.
+            con.execute(
+                "INSERT INTO digest_log VALUES (?, ?, current_timestamp) "
+                "ON CONFLICT (ref_date) DO UPDATE SET "
+                "attached_html = digest_log.attached_html OR excluded.attached_html, "
+                "sent_at = excluded.sent_at",
+                [ref_date, attached_full_report])
         finally:
             con.close()
 
