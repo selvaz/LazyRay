@@ -224,6 +224,92 @@ def test_monthly_auto_attaches_once_per_calendar_month(tmp_path):
         con.close()
 
 
+def test_record_send_never_downgrades_an_attached_ref_date(tmp_path):
+    """Regression for production 2026-09-05: three runs for the same
+    ref_date (with the monthly attachment, then without, then with again)
+    left one digest_log row, and if the second run's INSERT OR REPLACE had
+    been allowed to stand it would have erased the memory that the
+    attachment already went out that month -- the third run would have
+    re-attached it. With-then-without must stay "already done"."""
+    from datetime import date
+
+    from lazyray.db.connection import get_conn
+
+    import send_telegram_report as m
+
+    db = str(tmp_path / "lazyray.duckdb")
+    ref_date = date(2026, 9, 5)
+
+    m.record_send(db, ref_date, attached_full_report=True)
+    m.record_send(db, ref_date, attached_full_report=False)
+
+    con = get_conn(db)
+    try:
+        # Still "already done" this month -- the False send must not have
+        # reopened the monthly attachment.
+        assert not m.monthly_attach_due(con, ref_date)
+        row = con.execute(
+            "SELECT attached_html FROM digest_log WHERE ref_date = ?", [ref_date]
+        ).fetchone()
+        assert row == (True,)
+    finally:
+        con.close()
+
+
+def test_record_send_upgrades_false_to_true_for_the_same_ref_date(tmp_path):
+    """The other direction still works: a send without the attachment
+    followed by one with it must land on True, not stay stuck at False."""
+    from datetime import date
+
+    from lazyray.db.connection import get_conn
+
+    import send_telegram_report as m
+
+    db = str(tmp_path / "lazyray.duckdb")
+    ref_date = date(2026, 9, 5)
+
+    m.record_send(db, ref_date, attached_full_report=False)
+    con = get_conn(db)
+    try:
+        assert m.monthly_attach_due(con, ref_date)
+    finally:
+        con.close()
+
+    m.record_send(db, ref_date, attached_full_report=True)
+    con = get_conn(db)
+    try:
+        assert not m.monthly_attach_due(con, ref_date)
+        row = con.execute(
+            "SELECT attached_html FROM digest_log WHERE ref_date = ?", [ref_date]
+        ).fetchone()
+        assert row == (True,)
+    finally:
+        con.close()
+
+
+def test_record_send_new_month_is_not_held_down_by_a_prior_months_true(tmp_path):
+    """The OR-with-existing fix must not leak across ref_date rows: a True
+    row for one month's ref_date must not stop a different month's ref_date
+    from starting out due, since each row is scoped to its own ref_date and
+    monthly_attach_due groups by calendar month."""
+    from datetime import date
+
+    from lazyray.db.connection import get_conn
+
+    import send_telegram_report as m
+
+    db = str(tmp_path / "lazyray.duckdb")
+
+    m.record_send(db, date(2026, 9, 5), attached_full_report=True)
+    con = get_conn(db)
+    try:
+        assert not m.monthly_attach_due(con, date(2026, 9, 20))
+        # October has no row yet -- still due, unaffected by September's True.
+        assert m.monthly_attach_due(con, date(2026, 10, 1))
+    finally:
+        con.close()
+
+
 class _LockSpy:
     """Stand-in for db_write_lock: counts concurrent holds instead of really
     locking a file, the same double used in test_dalio_v2_report_lock.py.
