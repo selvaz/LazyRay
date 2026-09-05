@@ -95,6 +95,11 @@ dalio_v2:
       primary_deficit_gdp: [2, 4, 6]
       r_minus_g: [1, 3, 5]
       debt_trend_5y: [0.7, 1.5, 3.0]
+      # debt_p_up_5y (WP2/dsa.py): probability that the DSA fan-chart's
+      # simulated debt/GDP at ref_year+5 exceeds the last actual. ASSUMED
+      # (docs/DALIO_PROD_ASSESSMENT_2026-09.md Sec.5 "DSA" row) -- no source
+      # proposal number exists for this component, it is new in WP2.
+      debt_p_up_5y: [0.5, 0.7, 0.85]
     # equal weights to start (Phase 6 will run sensitivity analysis on these)
     weights:
       debt_gdp: 1
@@ -104,8 +109,22 @@ dalio_v2:
       primary_deficit_gdp: 1
       r_minus_g: 1
       debt_trend_5y: 1
-    bucket_thresholds: [20, 40, 60, 80]   # score cut points for strong/stable/watch/stressed/critical
-    bucket_labels: [strong, stable, watch, stressed, critical]
+      debt_p_up_5y: 1
+    bucket_thresholds: [20, 40, 60, 80]   # score cut points for low/moderate/elevated/high/critical
+    # DESCRIPTIVE, not evaluative (WP2/docs/DALIO_PROD_ASSESSMENT_2026-09.md
+    # Sec.3.1.6): "low" is a statement about the debt LEVEL, not a
+    # claim of fiscal strength -- see the FX-constraint gate just below,
+    # which can override a low read to fx_constrained.
+    bucket_labels: [low, moderate, elevated, high, critical]
+    # fx_constrained gate: for a country that does NOT issue a reserve
+    # currency (external_constraint.py's _reserve_currency_iso3s()), a
+    # low label overstates solvency if the debt is mostly FX-
+    # denominated or inflation is high enough that nominal comparisons stop
+    # being meaningful. Numbers are the assessment doc's own (Sec.3.1.6), not
+    # separately calibrated.
+    gate:
+      fx_debt_share_threshold: 50
+      inflation_threshold: 15
 
   political_execution:
     # WGI indicators are already -2.5..+2.5 standardized; scored as cross-country
@@ -182,15 +201,26 @@ dalio_v2:
   funding_liquidity:
     # REDUCED SCOPE vs the source proposal (see plan doc Fase 4 and the
     # module docstring): real GFN/auction/maturity-wall data is free only for
-    # ~15-25 OECD/major economies and is NOT wired here. This is "ramo B"
-    # only -- a coverage_tier that is ALWAYS capped at 'proxy', never 'full',
-    # regardless of how many of the 2 available proxy inputs are present.
+    # ~15-25 OECD/major economies. WP2 (docs/DALIO_PROD_ASSESSMENT_2026-09.md
+    # Sec.2.4/3.1.7) split the old single "ramo B" proxy into two branches by
+    # which data is actually fresh -- "market" (OECD-ish, monthly) and
+    # "external" (EM-ish, IDS annual) -- rather than mixing two nearly-
+    # disjoint country populations under one scale; a country with neither
+    # gets branch "none" / coverage_tier "no_data", never a silent 0.
     thresholds:
-      short_term_debt_reserves: [50, 100, 150]   # from source proposal §12.4 (same series as external_constraint)
+      # market branch
       yield_change_12m_pp: [1.0, 2.0, 3.5]        # from source proposal §12.2 (100bp/200bp/350bp)
+      term_spread_pp: [1.0, 0.0, -1.0]            # ASSUMED, orientation=-1 (curve inversion = stress)
+      reer_change_12m_pct: [10.0, 15.0, 25.0]     # ASSUMED, scored on magnitude (see module docstring)
+      # external branch
+      short_term_debt_reserves: [50, 100, 150]    # from source proposal §12.4 (same series as external_constraint)
+      # debt_service_exports: REUSED from dalio_v2.external_constraint.thresholds, not duplicated here
     weights:
-      short_term_debt_reserves: 1
       yield_change_12m_pp: 1
+      term_spread_pp: 1
+      reer_change_12m_pct: 1
+      short_term_debt_reserves: 1
+      debt_service_exports: 1
     bucket_thresholds: [20, 40, 60, 80]
     bucket_labels: [easy, normal, watch, stress, severe]
 
@@ -216,7 +246,7 @@ dalio_v2:
     stage_labels:
       crisis_funding_labels: [severe]
       crisis_external_labels: [high, severe]
-      late_long_debt_cycle_sovereign_labels: [stressed, critical]
+      late_long_debt_cycle_sovereign_labels: [high, critical]
       late_long_debt_cycle_funding_labels: [watch, stress, severe]
       private_bubble_labels: [bubble]
       late_leveraging_labels: [high]

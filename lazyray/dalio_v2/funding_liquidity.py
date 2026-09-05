@@ -1,35 +1,33 @@
 # -*- coding: utf-8 -*-
 """
-funding_liquidity.py — Dalio v2 Engine 2: Funding Liquidity (reduced scope).
+funding_liquidity.py — Dalio v2 Engine 2: Funding Liquidity, split by data
+branch (docs/DALIO_PROD_ASSESSMENT_2026-09.md Sec.2.4/3.1.7): the old single
+"ramo B" proxy mixed two nearly-disjoint country populations (30 countries
+with only a 10Y yield, 18 with only short-term-debt/reserves, 14 with
+neither) under one "easy/stress" scale as if they were comparable. They are
+not, so this module now reports which branch produced a score:
 
-The source proposal calls this "the most important engine to add" and
-specifies it around Gross Financing Needs, auction bid-to-cover/tail,
-maturity-wall and foreign-holder-flow data. The 2026-07-09 data-feasibility
-audit (docs/DALIO_5ENGINE_IMPLEMENTATION_PLAN_2026-07.md §2.2/Fase 4) found
-that data free and at real quality ONLY for roughly 15-25 OECD/major
-economies (IMF Fiscal Monitor's GFN is PDF-only for a curated ~30-country
-set; auction bid-to-cover/tail has no free cross-country aggregator; OECD's
-SDMX API covers maturity structure but only ~34-38 OECD members).
+  - "market"   (OECD-32ish): bond_yield_10y is fresh -- yield_change_12m_pp
+    (existing), term_spread_pp (10Y minus bis_policy_rate: an inverted/
+    flattening curve is the classic funding-stress signal, so this is scored
+    orientation=-1, lower is worse), reer_change_12m_pct (12-month REER
+    move; ASSUMED to score on magnitude alone -- see module note below).
+  - "external" (EM-20ish): short_term_debt_reserves is fresh -- the same
+    series as external_constraint.py, plus debt_service_exports (existing
+    indicator; thresholds REUSED from external_constraint.py's own config,
+    not duplicated -- see module docstring there).
+  - A country with BOTH keeps "market" (recorded in the audit trail).
+  - A country with NEITHER gets branch "none": score/label None,
+    coverage_tier "no_data" (suppress_insufficient() treats it exactly like
+    "insufficient"; the cycle classifier reads it as "unclassified, not
+    None-by-accident" -- see cycle_classifier.py).
 
-This module deliberately implements ONLY the plan's "ramo B" — the coarse
-proxy available for the FULL panel:
-  - short_term_debt_reserves: World Bank WDI short_term_debt_reserves (same
-    series as external_constraint.py; NOTE 2026-07-09: this used to be a
-    newly-added "World Bank IDS" indicator with an unverified source id —
-    on review that was an unnecessary duplicate, short_term_debt_reserves
-    already existed, already verified/live, and is literally the "short-term
-    external debt/reserves" ratio the source proposal specifies, not the
-    %-of-total-external-debt ratio the removed duplicate used) as a
-    rollover-risk proxy — external debt only, no domestic-debt maturity
-    wall, no auction data.
-  - yield_change_12m_pp: 12-month change in the 10Y bond yield (FRED
-    bond_yield_10y, ~32/64 coverage) as a funding-cost-shock proxy.
-
-coverage_tier is ALWAYS capped at 'proxy' (or 'insufficient'), regardless of
-how many of these 2 inputs are present — this is a structural limit of the
-proxy tier itself, not a per-country data gap that more inputs could fix.
-The OECD-based "ramo A" (real GFN/maturity/auction data for major
-economies) is explicitly deferred, not built here — see the plan doc.
+reer_change_12m_pct sign convention: currency appreciation tightens funding
+conditions for an EM borrower with FX-denominated debt but EASES them for a
+net exporter competing on price -- the direction that matters depends on the
+country's own balance sheet, which this engine does not model. Per the WP2
+spec, when unsure the magnitude alone (abs % change) is scored: a big REER
+swing either way is treated as a funding-conditions shock.
 """
 from __future__ import annotations
 
@@ -39,25 +37,36 @@ from typing import Optional
 
 import duckdb
 import pandas as pd
-from market_data_hub.reader import read_macro_panel_ext
+from market_data_hub.config_loader import get_countries
 
 from lazyray.config_loader import get_settings
 from lazyray.dalio import _first_avail, _latest
+from lazyray.dalio_v2.panel import load_panel_ext, used_asof_path
 from lazyray.dalio_v2.scoring import (
-    bucket_with_hysteresis, confidence_for, fresh_latest, git_short_sha,
-    prev_label, round_or_none, score_threshold, suppress_insufficient,
-    weighted_average,
+    actual_cutoff, bucket_with_hysteresis, clip_to_cutoff, confidence_for,
+    fresh_latest, git_short_sha, own_history_pct, percentile_group,
+    prev_label, relative_score_from_pct_group, round_or_none, score_threshold,
+    suppress_insufficient, weighted_average,
 )
 
 ENGINE = "funding_liquidity"
 
 _IND = {
     "short_term_debt_reserves": "short_term_debt_reserves",
+    "debt_service_exports": "debt_service_exports",
     "bond_yield_10y": "bond_yield_10y",
+    "bis_policy_rate": "bis_policy_rate",
+    "reer": "reer_broad",
 }
 
+_MARKET_COMPONENTS = ("yield_change_12m_pp", "term_spread_pp", "reer_change_12m_pct")
+_EXTERNAL_COMPONENTS = ("short_term_debt_reserves", "debt_service_exports")
+
 _COLUMNS = ["country_iso3", "ref_date", "engine", "score", "label", "coverage_tier",
-           "confidence", "n_components", "n_expected", "components_json", "computed_at"]
+           "confidence", "n_components", "n_expected", "components_json", "computed_at",
+           "relative_score", "relative_label"]
+
+_OWN_HISTORY_MIN_OBS = 15
 
 
 def _yoy_level_change(s: Optional[pd.DataFrame]) -> Optional[float]:
@@ -82,6 +91,26 @@ def _yoy_level_change(s: Optional[pd.DataFrame]) -> Optional[float]:
     return float(latest_val - prior_val)
 
 
+def _yoy_pct_change_abs(s: Optional[pd.DataFrame]) -> Optional[float]:
+    """abs(% change) over the trailing 12 months (see module docstring for
+    why magnitude, not signed direction). Same 12-18 month tolerance as
+    _yoy_level_change."""
+    if s is None or s.empty:
+        return None
+    d = s.sort_values("date").dropna(subset=["value"])
+    if len(d) < 2:
+        return None
+    latest_date, latest_val = d["date"].iloc[-1], d["value"].iloc[-1]
+    target = latest_date - pd.DateOffset(months=12)
+    prior = d[(d["date"] <= target) & (d["date"] >= latest_date - pd.DateOffset(months=18))]
+    if prior.empty:
+        return None
+    prior_val = prior["value"].iloc[-1]
+    if pd.isna(prior_val) or not prior_val:
+        return None
+    return float(abs(latest_val - prior_val) / abs(prior_val) * 100.0)
+
+
 def compute(con: duckdb.DuckDBPyConnection, ref_date, cfg: Optional[dict] = None,
            hub_db_path: Optional[str] = None) -> pd.DataFrame:
     settings = get_settings().get("dalio_v2", {})
@@ -92,67 +121,164 @@ def compute(con: duckdb.DuckDBPyConnection, ref_date, cfg: Optional[dict] = None
     bucket_labels = cfg.get("bucket_labels", ["easy", "normal", "watch", "stress", "severe"])
     margin_pct = settings.get("hysteresis_margin_pct", 0.10)
     max_age = settings.get("staleness_max_age_years", 4)
+    # debt_service_exports thresholds REUSED from external_constraint.py, not
+    # duplicated in settings.yaml (see module docstring / that module's own).
+    ext_th = (settings.get("external_constraint") or {}).get("thresholds", {})
 
-    panel = read_macro_panel_ext(db_path=hub_db_path)
+    dev = {c["iso3"]: c.get("development", "EM") for c in get_countries()}
+
+    panel = load_panel_ext(ref_date, hub_db_path)
     if panel.empty:
         return pd.DataFrame(columns=_COLUMNS)
     panel["date"] = pd.to_datetime(panel["date"])
     ref_ts = pd.Timestamp(ref_date)
+    cutoff = actual_cutoff(ref_date)
+    vintage_safe = used_asof_path(ref_date)
 
     sha = git_short_sha()
     now = datetime.now(timezone.utc)
-    rows = []
+    records = []
+    raw_by_component: "dict[str, dict]" = {}
     for country, cdf_full in panel.groupby("country_iso3"):
         cdf = cdf_full[cdf_full["date"] <= ref_ts]
         if cdf.empty:
             continue
         by_ind = {i: g[["date", "value"]] for i, g in cdf.groupby("indicator_id")}
 
-        short_term_reserves, strd_dt = fresh_latest(
-            _latest(_first_avail(by_ind, _IND["short_term_debt_reserves"])), ref_ts, max_age)
-        yield_series = by_ind.get(_IND["bond_yield_10y"])
-        # the 12m change is only as current as the LATEST print: a series
-        # that stopped updating years ago still yields a numeric change
-        # (its last two prints stay 12-18 months apart forever), so gate on
-        # the latest observation's freshness, not just record its date
-        latest_yield, yield_dt = fresh_latest(_latest(yield_series), ref_ts, max_age)
-        yield_change = _yoy_level_change(yield_series) if latest_yield is not None else None
+        # bond_yield_10y/bis_policy_rate/reer_broad are monthly actuals with
+        # no forecast rows -- deliberately NOT cutoff-gated, only ref_ts +
+        # max_age, same as external_constraint's REER reads.
+        s_yield = by_ind.get(_IND["bond_yield_10y"])
+        latest_yield, yield_dt = fresh_latest(_latest(s_yield), ref_ts, max_age)
+        # short_term_debt_reserves is WDI annual (LEVEL, clipped to cutoff
+        # BEFORE picking latest -- see scoring.actual_cutoff()/clip_to_cutoff()).
+        s_strd = clip_to_cutoff(_first_avail(by_ind, _IND["short_term_debt_reserves"]), cutoff)
+        short_term_reserves, strd_dt = fresh_latest(_latest(s_strd), ref_ts, max_age)
 
-        raw_values = {
-            "short_term_debt_reserves": None if pd.isna(short_term_reserves) else short_term_reserves,
-            "yield_change_12m_pp": yield_change,
-        }
-        obs_dates = {"short_term_debt_reserves": strd_dt, "yield_change_12m_pp": yield_dt}
-        components = {
-            "short_term_debt_reserves": None if raw_values["short_term_debt_reserves"] is None else
-                score_threshold(raw_values["short_term_debt_reserves"], *th.get("short_term_debt_reserves", [50, 100, 150])),
-            "yield_change_12m_pp": None if yield_change is None else
-                score_threshold(yield_change, *th.get("yield_change_12m_pp", [1.0, 2.0, 3.5])),
-        }
-        score, n_avail, n_exp = weighted_average(components, weights)
-        # structural cap: this engine only ever implements the reduced-scope
-        # proxy tier ("ramo B"), never real GFN/auction data -- see docstring.
-        tier = "proxy" if n_avail > 0 else "insufficient"
-        score = suppress_insufficient(score, tier)   # defensive; tier already implies score is None here
+        # branch selection: market first (a country with both keeps market,
+        # recorded in the audit trail -- see module docstring).
+        if latest_yield is not None:
+            branch = "market"
+        elif short_term_reserves is not None:
+            branch = "external"
+        else:
+            branch = "none"
+
+        raw_values: "dict[str, Optional[float]]" = {}
+        obs_dates: "dict[str, Optional[str]]" = {}
+        pct_own_history: "dict[str, Optional[float]]" = {}
+        active_components = ()
+
+        if branch == "market":
+            active_components = _MARKET_COMPONENTS
+            yield_change = _yoy_level_change(s_yield) if latest_yield is not None else None
+            s_policy = by_ind.get(_IND["bis_policy_rate"])
+            latest_policy, policy_dt = fresh_latest(_latest(s_policy), ref_ts, max_age)
+            term_spread = (latest_yield - latest_policy) \
+                if latest_yield is not None and latest_policy is not None else None
+            s_reer = by_ind.get(_IND["reer"])
+            latest_reer, reer_dt = fresh_latest(_latest(s_reer), ref_ts, max_age)
+            reer_change = _yoy_pct_change_abs(s_reer) if latest_reer is not None else None
+
+            raw_values = {"yield_change_12m_pp": yield_change, "term_spread_pp": term_spread,
+                         "reer_change_12m_pct": reer_change}
+            obs_dates = {"yield_change_12m_pp": yield_dt,
+                        "term_spread_pp": (policy_dt if term_spread is not None else None),
+                        "reer_change_12m_pct": (reer_dt if reer_change is not None else None)}
+            # all three are 12m-change/spread derivations of a single series
+            # (or a 2-series subtraction) -- no direct "own history of the
+            # change itself" series is assembled, see module docstring's
+            # scope note; own-history percentile stays None for this branch.
+            pct_own_history = {k: None for k in active_components}
+            components = {
+                "yield_change_12m_pp": None if yield_change is None else
+                    score_threshold(yield_change, *th.get("yield_change_12m_pp", [1.0, 2.0, 3.5])),
+                "term_spread_pp": None if term_spread is None else
+                    score_threshold(term_spread, *th.get("term_spread_pp", [1.0, 0.0, -1.0]), orientation=-1),
+                "reer_change_12m_pct": None if reer_change is None else
+                    score_threshold(reer_change, *th.get("reer_change_12m_pct", [10.0, 15.0, 25.0])),
+            }
+        elif branch == "external":
+            active_components = _EXTERNAL_COMPONENTS
+            s_dse = clip_to_cutoff(_first_avail(by_ind, _IND["debt_service_exports"]), cutoff)
+            debt_service_exports, dse_dt = fresh_latest(_latest(s_dse), ref_ts, max_age)
+
+            raw_values = {"short_term_debt_reserves": short_term_reserves,
+                         "debt_service_exports": debt_service_exports}
+            obs_dates = {"short_term_debt_reserves": strd_dt, "debt_service_exports": dse_dt}
+            pct_own_history = {
+                "short_term_debt_reserves": own_history_pct(
+                    s_strd, short_term_reserves, strd_dt, 1, _OWN_HISTORY_MIN_OBS),
+                "debt_service_exports": own_history_pct(
+                    s_dse, debt_service_exports, dse_dt, 1, _OWN_HISTORY_MIN_OBS),
+            }
+            components = {
+                "short_term_debt_reserves": score_threshold(
+                    short_term_reserves, *th.get("short_term_debt_reserves", [50, 100, 150])),
+                "debt_service_exports": None if debt_service_exports is None else
+                    score_threshold(debt_service_exports, *ext_th.get("debt_service_exports", [15, 25, 40])),
+            }
+        else:
+            components = {}
+
+        for comp, v in raw_values.items():
+            raw_by_component.setdefault(comp, {})[country] = v
+
+        if branch == "none":
+            score, n_avail, n_exp = None, 0, 0
+            tier = "no_data"
+        else:
+            score, n_avail, n_exp = weighted_average(components, weights)
+            tier = "proxy" if n_avail > 0 else "insufficient"
+        score = suppress_insufficient(score, tier)
         conf = confidence_for(tier)
         prev = prev_label(con, country, ENGINE, ref_date)
-        label = bucket_with_hysteresis(score, bucket_thresholds, bucket_labels, prev, margin_pct)
+        label = None if branch == "none" else \
+            bucket_with_hysteresis(score, bucket_thresholds, bucket_labels, prev, margin_pct)
+        data_through = max((d for d in obs_dates.values() if d), default=None)
+
+        records.append(dict(
+            country=country, score=score, label=label, tier=tier, conf=conf,
+            n_avail=n_avail, n_exp=n_exp, raw_values=raw_values, obs_dates=obs_dates,
+            components=components, pct_own_history=pct_own_history, data_through=data_through,
+            branch=branch, has_both=(latest_yield is not None and short_term_reserves is not None),
+            active_components=active_components,
+        ))
+
+    if not records:
+        return pd.DataFrame(columns=_COLUMNS)
+
+    pct_group_by_component = {comp: percentile_group(vals, dev) for comp, vals in raw_by_component.items()}
+
+    rows = []
+    for r in records:
+        country = r["country"]
+        pct_group = {comp: pct_group_by_component[comp].get(country) for comp in r["active_components"]}
+        relative_score = relative_score_from_pct_group(pct_group)
+        relative_label = None if r["branch"] == "none" else \
+            bucket_with_hysteresis(relative_score, bucket_thresholds, bucket_labels, None, margin_pct)
 
         audit = {
-            "model_version": sha, "ref_date": str(ref_date), "asof": None,
-            "scope": "proxy tier only (ramo B) -- real GFN/auction/maturity-wall "
-                    "data not wired, see module docstring",
+            "model_version": sha, "ref_date": str(ref_date),
+            "asof": str(ref_date) if vintage_safe else None,
+            "data_through": r["data_through"],
+            "branch": r["branch"], "has_both_branches_data": r["has_both"],
+            "scope": ("no funding data" if r["branch"] == "none" else
+                     f"{r['branch']} branch (docs/DALIO_PROD_ASSESSMENT_2026-09.md Sec.3.1.7)"),
             "components": {
-                k: {"raw_value": round_or_none(raw_values.get(k)),
-                    "score": components[k], "weight": weights.get(k, 0),
-                    "obs_date": obs_dates.get(k)}
-                for k in components
+                k: {"raw_value": round_or_none(r["raw_values"].get(k)),
+                    "score": r["components"].get(k), "weight": weights.get(k, 0),
+                    "obs_date": r["obs_dates"].get(k),
+                    "pct_own_history": round_or_none(r["pct_own_history"].get(k)),
+                    "pct_group": round_or_none(pct_group.get(k))}
+                for k in r["active_components"]
             },
-            "missing_components": [k for k, v in components.items() if v is None],
-            "coverage_tier": tier, "vintage_safe": False,
+            "missing_components": [k for k in r["active_components"] if r["components"].get(k) is None],
+            "coverage_tier": r["tier"], "vintage_safe": vintage_safe,
         }
         rows.append((country, ref_date, ENGINE,
-                    None if score is None else round(score, 2), label, tier, conf,
-                    n_avail, n_exp, json.dumps(audit), now))
+                    None if r["score"] is None else round(r["score"], 2), r["label"], r["tier"], r["conf"],
+                    r["n_avail"], r["n_exp"], json.dumps(audit), now,
+                    round_or_none(relative_score), relative_label))
 
     return pd.DataFrame(rows, columns=_COLUMNS)

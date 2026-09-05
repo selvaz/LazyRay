@@ -64,7 +64,8 @@ def collect(con: duckdb.DuckDBPyConnection, ref_date,
     """Long-format engine_scores for ref_date, one row per (country, engine),
     optionally filtered to a subset of engines."""
     q = ("SELECT country_iso3, engine, score, label, coverage_tier, confidence, "
-        "n_components, n_expected, components_json, computed_at "
+        "n_components, n_expected, components_json, computed_at, "
+        "relative_score, relative_label "
         "FROM engine_scores WHERE ref_date = ?")
     params = [ref_date]
     if engines:
@@ -79,7 +80,8 @@ def to_csv(df: pd.DataFrame, out_path: Path) -> Path:
         pd.DataFrame().to_csv(out_path)
         return out_path
     wide = df.pivot(index="country_iso3", columns="engine",
-                    values=["score", "label", "coverage_tier", "confidence"])
+                    values=["score", "label", "coverage_tier", "confidence",
+                           "relative_score", "relative_label"])
     wide.columns = [f"{engine}_{field}" for field, engine in wide.columns]
     wide.sort_index().to_csv(out_path)
     return out_path
@@ -121,6 +123,16 @@ details{margin:4px 0 14px 218px;color:#1a1a2e} details summary{cursor:pointer;fo
 .country-card{display:none} .country-card.active{display:block}
 """
 
+_VINTAGE_SAFE_NOTE = (
+    "<strong>Point-in-time (vintage-safe)</strong> read: values are as known "
+    "as of {ref_date}, from the hub's vintage tables, not revised with "
+    "hindsight (vintage log coverage starts 2026-07-10; an as-of date before "
+    "that reflects whatever the log held then).")
+_VINTAGE_UNSAFE_NOTE = (
+    "<strong>Not vintage-aware for this run</strong> (live read of current "
+    "values, not point-in-time as of {ref_date}) &mdash; see "
+    "docs/DALIO_VINTAGE_AND_AUDIT_PLAN_2026-07.md.")
+
 _HEADER_TMPL = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -128,7 +140,8 @@ _HEADER_TMPL = """<!doctype html>
 <title>Dalio v2 - engine scores ({ref_date})</title>
 <style>{style}</style></head><body>
 <header><h1>Dalio v2 &mdash; country risk engines</h1>
-<p>As of {ref_date} &middot; generated {generated_at} UTC &middot; model_version {model_version}</p></header>
+<p>as of {ref_date} &middot; data through {data_through_year} &middot; model {model_version}
+&middot; generated {generated_at} UTC</p></header>
 <main>
 <div>
  <div class="kpi"><b>{n_countries}</b><span>countries scored</span></div>
@@ -136,12 +149,17 @@ _HEADER_TMPL = """<!doctype html>
  <div class="kpi"><b>{avg_score:.1f}</b><span>average risk (0-100)</span></div>
  <div class="kpi"><b>{n_worst}</b><span>country&middot;engine pairs in the worst bucket</span></div>
 </div>
-<p class="note"><strong>Not yet vintage-aware</strong> (live read of current values, not
-point-in-time as of {ref_date} for historical dates) &mdash; see
-docs/DALIO_VINTAGE_AND_AUDIT_PLAN_2026-07.md. Higher score = worse. Badge
+<p class="note">{vintage_note} Higher score = worse. Badge
 opacity in the comparison table and the coverage note on each bar signal
 partial (proxy) or thin (insufficient) data coverage &mdash; never treat a
-proxy-tier score as equivalent to a full one.</p>
+proxy-tier score as equivalent to a full one. "relative to peers" is the
+country's own-income-group percentile scale, alongside (never replacing) the
+absolute threshold score/label. Sovereign Solvency's <code>fx_constrained</code>
+is a POST-assignment override of a <code>low</code> read for a
+non-reserve-currency country with a majority-FX debt stock or high
+inflation &mdash; not a sixth bucket. Funding Liquidity shows which data
+branch (market/external/none) produced its score; "no funding data" is a
+disclosed gap, not a silent zero.</p>
 """
 
 _COMPARE_TMPL = """
@@ -211,9 +229,32 @@ def _component_rows(components: dict) -> str:
             else f"{score:.1f}"
         obs = c.get("obs_date")
         obs_txt = f' <span class="muted">({obs})</span>' if obs else ""
+        pct_own = c.get("pct_own_history")
+        pct_own_txt = "n/a" if pct_own is None or not isinstance(pct_own, (int, float)) \
+            else f"{pct_own:.0f}"
+        pct_grp = c.get("pct_group")
+        pct_grp_txt = "n/a" if pct_grp is None or not isinstance(pct_grp, (int, float)) \
+            else f"{pct_grp:.0f}"
         rows.append(f"<tr><td>{name}{obs_txt}</td><td class=n>{raw_txt}</td>"
-                   f"<td class=n>{score_txt}</td><td class=n>{c.get('weight', 0)}</td></tr>")
+                   f"<td class=n>{score_txt}</td><td class=n>{c.get('weight', 0)}</td>"
+                   f"<td class=n>{pct_own_txt}</td><td class=n>{pct_grp_txt}</td></tr>")
     return "".join(rows)
+
+
+def _dsa_block(components: dict, dsa_audit: Optional[dict]) -> str:
+    """DSA fan-chart line (sovereign_solvency only, WP2 deliverable D): p_up
+    plus p10/p50/p90 of the +5y debt/GDP distribution, or a one-line reason
+    when the component was skipped (fewer than 12 years of own history)."""
+    if not isinstance(dsa_audit, dict):
+        return ""
+    if "p10" not in dsa_audit:
+        reason = dsa_audit.get("skipped", "unavailable")
+        return f'<div class="tier-note">DSA fan-chart: not computed ({reason})</div>'
+    p_up = (components.get("debt_p_up_5y") or {}).get("raw_value")
+    p_up_txt = "n/a" if p_up is None else f"{p_up * 100:.0f}%"
+    return (f'<div class="tier-note">DSA fan-chart (+5y): p_up={p_up_txt} &middot; '
+           f'p10={dsa_audit["p10"]:.1f} &middot; p50={dsa_audit["p50"]:.1f} &middot; '
+           f'p90={dsa_audit["p90"]:.1f}</div>')
 
 
 def _country_card(iso3: str, name: str, rows: pd.DataFrame, engines_present, active: bool) -> str:
@@ -233,21 +274,36 @@ def _country_card(iso3: str, name: str, rows: pd.DataFrame, engines_present, act
         conf_txt = r["confidence"] if isinstance(r["confidence"], str) else "n/a"
         n_comp = "?" if pd.isna(r["n_components"]) else int(r["n_components"])
         n_exp = "?" if pd.isna(r["n_expected"]) else int(r["n_expected"])
+        rel_label = r.get("relative_label")
+        rel_txt = f' &middot; relative to peers: {rel_label}' \
+            if isinstance(rel_label, str) and rel_label else ""
         bars.append(
             f'<div class="pbar"><div class="pl">{_ENGINE_NAMES.get(e, e)}</div>'
             f'<div class="pt"><div class="pf" style="width:{pct}%;background:{color}"></div></div>'
             f'<div class="pv">{score_txt}{sep}{label_txt}</div></div>'
             f'<div class="tier-note">coverage: {tier_txt} &middot; '
-            f'confidence: {conf_txt} &middot; {n_comp}/{n_exp} inputs</div>')
+            f'confidence: {conf_txt} &middot; {n_comp}/{n_exp} inputs{rel_txt}</div>')
         try:
-            components = json.loads(r["components_json"]).get("components", {})
+            audit = json.loads(r["components_json"])
         except Exception:
-            components = {}
+            audit = {}
+        components = audit.get("components", {})
+        gate = audit.get("gate")
+        if isinstance(gate, dict):
+            bars.append(
+                f'<div class="tier-note">FX-constrained gate: {gate.get("reason")} '
+                f'(fx_debt_share={gate.get("fx_debt_share")}, inflation={gate.get("inflation")})</div>')
+        branch = audit.get("branch")
+        if branch:
+            bars.append(f'<div class="tier-note">funding branch: {branch}</div>')
+        if e == "sovereign_solvency":
+            bars.append(_dsa_block(components, audit.get("dsa")))
         if components:
             bars.append(
                 '<details><summary>components</summary>'
                 '<table class="comp-table"><thead><tr><th>input</th><th class=n>raw value</th>'
-                f'<th class=n>risk score</th><th class=n>weight</th></tr></thead>'
+                f'<th class=n>risk score</th><th class=n>weight</th>'
+                f'<th class=n>pct own-hist</th><th class=n>pct peer-group</th></tr></thead>'
                 f'<tbody>{_component_rows(components)}</tbody></table></details>')
     cls = "country-card active" if active else "country-card"
     return (f'<div class="card {cls}" id="c-{iso3}"><h3>{name} ({iso3})</h3>{"".join(bars)}</div>')
@@ -267,10 +323,16 @@ def generate_html_report(con: duckdb.DuckDBPyConnection, ref_date, out_dir: Path
     names = _country_names()
     engines_present = sorted(df["engine"].unique())
     model_version = "unknown"
+    vintage_safe = False
     try:
-        model_version = json.loads(df["components_json"].iloc[0]).get("model_version", "unknown")
+        first_audit = json.loads(df["components_json"].iloc[0])
+        model_version = first_audit.get("model_version", "unknown")
+        vintage_safe = bool(first_audit.get("vintage_safe", False))
     except Exception:
         pass
+    data_through_year = ref_date.year - 1
+    vintage_note = (_VINTAGE_SAFE_NOTE if vintage_safe else _VINTAGE_UNSAFE_NOTE).format(
+        ref_date=ref_date)
 
     pivot_score = df.pivot(index="country_iso3", columns="engine", values="score")
     pivot_label = df.pivot(index="country_iso3", columns="engine", values="label")
@@ -290,10 +352,11 @@ def generate_html_report(con: duckdb.DuckDBPyConnection, ref_date, out_dir: Path
             n_worst += int((df.loc[df["engine"] == e, "label"] == terminal).sum())
 
     header_html = _HEADER_TMPL.format(
-        ref_date=ref_date, generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
+        ref_date=ref_date, data_through_year=data_through_year,
+        generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
         model_version=model_version, n_countries=len(avg_score), n_engines=len(engines_present),
         avg_score=float(avg_score.mean()) if len(avg_score) else 0.0, n_worst=n_worst,
-        style=_STYLE)
+        vintage_note=vintage_note, style=_STYLE)
 
     compare_html = _comparison_table(pivot_score, pivot_label, pivot_tier, engines_present,
                                      names, avg_score)

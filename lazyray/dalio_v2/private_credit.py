@@ -33,14 +33,16 @@ from typing import Optional
 import duckdb
 import numpy as np
 import pandas as pd
-from market_data_hub.reader import read_macro_panel_ext
+from market_data_hub.config_loader import get_countries
 
 from lazyray.config_loader import get_settings
 from lazyray.dalio import _first_avail, _latest
+from lazyray.dalio_v2.panel import load_panel_ext, used_asof_path
 from lazyray.dalio_v2.scoring import (
-    bucket_with_hysteresis, confidence_for, coverage_tier, fresh_first_avail,
-    fresh_latest, git_short_sha, prev_label, round_or_none, score_threshold,
-    suppress_insufficient, weighted_average,
+    actual_cutoff, bucket_with_hysteresis, clip_to_cutoff, confidence_for,
+    coverage_tier, fresh_first_avail, fresh_latest, git_short_sha,
+    own_history_pct, percentile_group, prev_label, relative_score_from_pct_group,
+    round_or_none, score_threshold, suppress_insufficient, weighted_average,
 )
 
 ENGINE = "private_credit"
@@ -54,9 +56,11 @@ _IND = {
 }
 
 _COLUMNS = ["country_iso3", "ref_date", "engine", "score", "label", "coverage_tier",
-           "confidence", "n_components", "n_expected", "components_json", "computed_at"]
+           "confidence", "n_components", "n_expected", "components_json", "computed_at",
+           "relative_score", "relative_label"]
 
 _MIN_TREND_POINTS = 5
+_OWN_HISTORY_MIN_OBS = 15
 
 
 def _linear_detrend_gap(s: Optional[pd.DataFrame], window_years: int = 10) -> Optional[float]:
@@ -116,15 +120,20 @@ def compute(con: duckdb.DuckDBPyConnection, ref_date, cfg: Optional[dict] = None
     margin_pct = settings.get("hysteresis_margin_pct", 0.10)
     max_age = settings.get("staleness_max_age_years", 4)
 
-    panel = read_macro_panel_ext(db_path=hub_db_path)
+    dev = {c["iso3"]: c.get("development", "EM") for c in get_countries()}
+
+    panel = load_panel_ext(ref_date, hub_db_path)
     if panel.empty:
         return pd.DataFrame(columns=_COLUMNS)
     panel["date"] = pd.to_datetime(panel["date"])
     ref_ts = pd.Timestamp(ref_date)
+    cutoff = actual_cutoff(ref_date)
+    vintage_safe = used_asof_path(ref_date)
 
     sha = git_short_sha()
     now = datetime.now(timezone.utc)
-    rows = []
+    records = []
+    raw_by_component: "dict[str, dict]" = {}
     for country, cdf_full in panel.groupby("country_iso3"):
         cdf = cdf_full[cdf_full["date"] <= ref_ts]
         if cdf.empty:
@@ -134,12 +143,19 @@ def compute(con: duckdb.DuckDBPyConnection, ref_date, cfg: Optional[dict] = None
         # the private-debt series' latest print gates everything DERIVED from
         # that series (detrend-proxy gap, ratio growth): a series that stopped
         # updating years ago would otherwise keep producing numeric values
-        # scored as the current condition
-        s_debt = by_ind.get(_IND["private_debt"])
+        # scored as the current condition. private_debt_gdp (IMF GDD, annual)
+        # is a LEVEL read, so the whole series is clipped to the cutoff up
+        # front (scoring.actual_cutoff()/clip_to_cutoff()) -- the proxy trend
+        # helpers below (_linear_detrend_gap/_yoy_pct_change) then never see
+        # a post-cutoff point either, not just the "latest" gate.
+        s_debt = clip_to_cutoff(by_ind.get(_IND["private_debt"]), cutoff)
         latest_debt, debt_dt = fresh_latest(_latest(s_debt), ref_ts, max_age)
 
-        credit_gap_bis, gap_dt = fresh_latest(
-            _latest(_first_avail(by_ind, _IND["credit_gap_bis"])), ref_ts, max_age)
+        # BIS credit_gap/DSR are quarterly ACTUALS with no forecast rows at
+        # all (unlike WEO) -- deliberately NOT cutoff-gated, only ref_ts +
+        # max_age, so a genuinely fresher BIS print is never discarded.
+        s_gap_bis = _first_avail(by_ind, _IND["credit_gap_bis"])
+        credit_gap_bis, gap_dt = fresh_latest(_latest(s_gap_bis), ref_ts, max_age)
         used_proxy = credit_gap_bis is None
         if used_proxy:
             credit_gap = _linear_detrend_gap(s_debt) if latest_debt is not None else None
@@ -167,10 +183,11 @@ def compute(con: duckdb.DuckDBPyConnection, ref_date, cfg: Optional[dict] = None
         # a 2-candidate fallback list (WEO then real) -- a stale WEO print
         # must not shadow a fresh real_gdp_growth one (Codex review, same
         # class of bug already guarded against in sovereign_solvency.py).
-        real_gdp, growth_dt = fresh_first_avail(by_ind, _IND["real_growth"], ref_ts, max_age)
+        real_gdp, growth_dt = fresh_first_avail(by_ind, _IND["real_growth"], ref_ts, max_age, cutoff)
         real_credit_growth = (ratio_growth + real_gdp) \
             if ratio_growth is not None and real_gdp is not None else None
-        npl, npl_dt = fresh_latest(_latest(_first_avail(by_ind, _IND["npl"])), ref_ts, max_age)
+        npl, npl_dt = fresh_latest(
+            _latest(clip_to_cutoff(_first_avail(by_ind, _IND["npl"]), cutoff)), ref_ts, max_age)
 
         raw_values = {
             "credit_gap": credit_gap, "private_dsr": dsr_pct,
@@ -204,21 +221,65 @@ def compute(con: duckdb.DuckDBPyConnection, ref_date, cfg: Optional[dict] = None
         conf = confidence_for(tier)
         prev = prev_label(con, country, ENGINE, ref_date)
         label = bucket_with_hysteresis(score, bucket_thresholds, bucket_labels, prev, margin_pct)
+        data_through = max((d for d in obs_dates.values() if d), default=None)
+
+        # own-history percentile: only credit_gap (when the BIS series -- not
+        # the proxy -- backs it) and npl_ratio map onto a direct single-
+        # indicator series; private_dsr's raw_value is ALREADY an own-history
+        # percentile (see _own_history_percentile above, a percentile of a
+        # percentile is not meaningful); real_credit_growth/real_house_price_gap
+        # are derived/never-wired, see module docstring.
+        pct_own_history = {
+            "credit_gap": (None if used_proxy else
+                          own_history_pct(s_gap_bis, credit_gap, gap_dt, 1, _OWN_HISTORY_MIN_OBS)),
+            "private_dsr": None,
+            "real_credit_growth": None,
+            "real_house_price_gap": None,
+            "npl_ratio": own_history_pct(clip_to_cutoff(by_ind.get(_IND["npl"]), cutoff),
+                                         npl, npl_dt, 1, _OWN_HISTORY_MIN_OBS),
+        }
+
+        for comp, v in raw_values.items():
+            raw_by_component.setdefault(comp, {})[country] = v
+
+        records.append(dict(
+            country=country, score=score, label=label, tier=tier, conf=conf,
+            n_avail=n_avail, n_exp=n_exp, raw_values=raw_values, obs_dates=obs_dates,
+            components=components, pct_own_history=pct_own_history,
+            data_through=data_through, used_proxy=used_proxy,
+        ))
+
+    if not records:
+        return pd.DataFrame(columns=_COLUMNS)
+
+    pct_group_by_component = {comp: percentile_group(vals, dev) for comp, vals in raw_by_component.items()}
+
+    rows = []
+    for r in records:
+        country = r["country"]
+        pct_group = {comp: pct_group_by_component[comp].get(country) for comp in r["raw_values"]}
+        relative_score = relative_score_from_pct_group(pct_group)
+        relative_label = bucket_with_hysteresis(relative_score, bucket_thresholds, bucket_labels, None, margin_pct)
 
         audit = {
-            "model_version": sha, "ref_date": str(ref_date), "asof": None,
-            "credit_gap_source": "proxy(private_debt_gdp linear detrend)" if used_proxy else "bis",
+            "model_version": sha, "ref_date": str(ref_date),
+            "asof": str(ref_date) if vintage_safe else None,
+            "data_through": r["data_through"],
+            "credit_gap_source": "proxy(private_debt_gdp linear detrend)" if r["used_proxy"] else "bis",
             "components": {
-                k: {"raw_value": round_or_none(raw_values[k]),
-                    "score": components[k], "weight": weights.get(k, 0),
-                    "obs_date": obs_dates.get(k)}
-                for k in components
+                k: {"raw_value": round_or_none(r["raw_values"][k]),
+                    "score": r["components"][k], "weight": weights.get(k, 0),
+                    "obs_date": r["obs_dates"].get(k),
+                    "pct_own_history": round_or_none(r["pct_own_history"].get(k)),
+                    "pct_group": round_or_none(pct_group.get(k))}
+                for k in r["components"]
             },
-            "missing_components": [k for k, v in components.items() if v is None],
-            "coverage_tier": tier, "vintage_safe": False,
+            "missing_components": [k for k, v in r["components"].items() if v is None],
+            "coverage_tier": r["tier"], "vintage_safe": vintage_safe,
         }
         rows.append((country, ref_date, ENGINE,
-                    None if score is None else round(score, 2), label, tier, conf,
-                    n_avail, n_exp, json.dumps(audit), now))
+                    None if r["score"] is None else round(r["score"], 2), r["label"], r["tier"], r["conf"],
+                    r["n_avail"], r["n_exp"], json.dumps(audit), now,
+                    round_or_none(relative_score), relative_label))
 
     return pd.DataFrame(rows, columns=_COLUMNS)

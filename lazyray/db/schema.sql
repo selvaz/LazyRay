@@ -88,6 +88,14 @@ CREATE TABLE IF NOT EXISTS engine_scores (
     PRIMARY KEY (country_iso3, ref_date, engine)
 );
 
+-- WP2 (docs/DALIO_PROD_ASSESSMENT_2026-09.md Sec.3.1.5): comparability scale
+-- alongside the absolute `score` above -- mean of the engine's available
+-- per-component peer-group percentiles, plus its bucket label under the same
+-- cut points as `label`. ADD COLUMN IF NOT EXISTS: idempotent against an
+-- existing engine_scores table (DuckDB supports the IF NOT EXISTS form).
+ALTER TABLE engine_scores ADD COLUMN IF NOT EXISTS relative_score DOUBLE;
+ALTER TABLE engine_scores ADD COLUMN IF NOT EXISTS relative_label VARCHAR;
+
 -- ----------------------------------------------------------------------------
 -- 3. dalio_cycle_v2 — Fase 5 cycle classifier: sits on top of engine_scores,
 --    never collapses the 5 engines into one number before applying rules
@@ -100,7 +108,10 @@ CREATE TABLE IF NOT EXISTS dalio_cycle_v2 (
     country_iso3          VARCHAR NOT NULL,
     ref_date               DATE    NOT NULL,
     dalio_stage             VARCHAR,   -- early_or_mid_cycle | late_long_debt_cycle | private_bubble |
-                                        -- late_leveraging | contraction | crisis | NULL (unclassifiable)
+                                        -- late_leveraging | contraction | crisis |
+                                        -- unclassified_no_funding_data (funding_liquidity branch=none,
+                                        -- WP2 Sec.3.1.7 -- never a bare NULL for that specific reason) |
+                                        -- NULL (unclassifiable for any other gate-coverage reason)
     deleveraging_type       VARCHAR,   -- none | beautiful | inflationary | repressive | restructuring |
                                         -- ugly | NULL (unclassifiable). 'restructuring' is currently
                                         -- unreachable -- no restructuring-event data source exists, folded
@@ -111,6 +122,22 @@ CREATE TABLE IF NOT EXISTS dalio_cycle_v2 (
     audit_json               VARCHAR,  -- model_version, engines_used{engine:tier}, unclassifiable_reason
     computed_at               TIMESTAMP,
     PRIMARY KEY (country_iso3, ref_date)
+);
+
+-- ----------------------------------------------------------------------------
+-- 4. run_meta — one row per Dalio v2 run (ref_date), for --if-changed change
+--    detection: a daily-scheduled run whose input panel hash matches the
+--    most recent row here can skip computing/writing anything at all. See
+--    lazyray/dalio_v2/runner.py::run_dalio_v2(if_changed=...) and
+--    docs/DALIO_PROD_ASSESSMENT_2026-09.md §3.1.1.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS run_meta (
+    ref_date    DATE PRIMARY KEY,
+    input_hash  VARCHAR,     -- SHA-256 of the sorted (date,country,indicator,value) rows used
+    model_version VARCHAR,   -- git_short_sha() at run time
+    engines     VARCHAR,     -- comma-joined, sorted engine names this run computed
+    n_rows      INTEGER,     -- rows in the input panel used for the hash
+    computed_at TIMESTAMP
 );
 
 -- Note: country_classification (written by classify.py) is not declared

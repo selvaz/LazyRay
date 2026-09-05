@@ -30,7 +30,7 @@ def _run_and_collect(tmp_db):
     _seed(con)
     con.commit()
     con.close()
-    run_dalio_v2(engines=["sovereign_solvency", "political_execution"], ref_year=2026)
+    run_dalio_v2(engines=["sovereign_solvency", "political_execution"], ref_date=REF)
     con = get_lazyray_conn(read_only=True)
     df = report.collect(con, REF)
     return con, df
@@ -49,8 +49,10 @@ def test_generate_html_report_smoke(tmp_db, tmp_path):
     kpis = dict(re.findall(r'<div class="kpi"><b>([^<]+)</b><span>([^<]+)', html))
     n_worst = [v for v, lbl in kpis.items() if "worst" in lbl]
     assert n_worst == ["1"]
-    # obs_date shown in the components table
-    assert "(2026-12-31)" in html
+    # obs_date shown in the components table -- _seed()'s level indicators
+    # (WEO/GDD/WGI) now sit at _LEVEL_DATE (2025-12-31) so they clear the new
+    # actual_cutoff() gate for ref_date=2026-12-31; see test_dalio_v2.py.
+    assert "(2025-12-31)" in html
 
 
 def test_to_csv_smoke(tmp_db, tmp_path):
@@ -119,6 +121,6 @@ def test_cli_empty_panel_exits_nonzero(tmp_db, monkeypatch, capsys):
     con = get_hub_conn()   # bootstraps an empty, schema'd hub DB
     con.close()
 
-    monkeypatch.setattr(sys, "argv", ["run_dalio_v2.py", "--ref-year", "2026"])
+    monkeypatch.setattr(sys, "argv", ["run_dalio_v2.py", "--as-of", "2026-12-31"])
     assert cli.main() == 1
     assert "No scores written" in capsys.readouterr().err

@@ -24,7 +24,11 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Current schema version. Bump this whenever schema.sql changes shape and add a
 # matching `if current < N:` branch in migrate() below.
-SCHEMA_VERSION = 1
+# v2 (WP2, 2026-09): engine_scores gained relative_score/relative_label via
+# ADD COLUMN IF NOT EXISTS in schema.sql -- apply_schema() re-runs schema.sql
+# on every open, so the column addition itself is unconditional and needs no
+# migrate() branch; the version bump is bookkeeping only.
+SCHEMA_VERSION = 2
 
 
 def _default_db() -> str:

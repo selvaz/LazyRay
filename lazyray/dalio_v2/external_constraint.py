@@ -37,7 +37,8 @@ watch/stress/critical). The remaining four (net_external_liability_gdp,
 fx_debt_share, inflation, fx_overvaluation_pct) have no proposal thresholds
 and are ASSUMED — see config/settings.yaml's dalio_v2.external_constraint
 comment. Revisit once Fase 6 (historical backtest) gives real calibration
-evidence.
+evidence. funding_liquidity.py's external branch reuses debt_service_exports'
+numbers straight from here (see that module) rather than duplicating them.
 
 Reserve-currency caveat (proposal §19.3/§8.5): for USA, JPN, GBR, CHE and
 euro-area members, the raw score is discounted (reserve_currency_discount)
@@ -45,7 +46,10 @@ since a reserve-currency issuer can sustain external imbalances longer —
 but this does NOT mean zero risk, only a different (monetary debasement,
 not classic BoP crisis) risk channel; the discount is applied, never
 zeroed, and the caveat is recorded in components_json so it is never
-silently invisible.
+silently invisible. sovereign_solvency.py's fx-constraint gate
+(docs/DALIO_PROD_ASSESSMENT_2026-09.md Sec.3.1.6) reuses
+_reserve_currency_iso3s() from here, the SAME reserve-currency definition,
+rather than a second one.
 """
 from __future__ import annotations
 
@@ -57,14 +61,15 @@ import duckdb
 import numpy as np
 import pandas as pd
 from market_data_hub.config_loader import get_countries
-from market_data_hub.reader import read_macro_panel_ext
 
 from lazyray.config_loader import get_settings
 from lazyray.dalio import _first_avail, _latest
+from lazyray.dalio_v2.panel import load_panel_ext, used_asof_path
 from lazyray.dalio_v2.scoring import (
-    bucket_with_hysteresis, confidence_for, coverage_tier, fresh_first_avail,
-    fresh_latest, git_short_sha, notna, prev_label, round_or_none,
-    score_threshold, suppress_insufficient, weighted_average,
+    actual_cutoff, bucket_with_hysteresis, clip_to_cutoff, confidence_for,
+    coverage_tier, fresh_first_avail, fresh_latest, git_short_sha, notna,
+    own_history_pct, percentile_group, prev_label, relative_score_from_pct_group,
+    round_or_none, score_threshold, suppress_insufficient, weighted_average,
 )
 
 ENGINE = "external_constraint"
@@ -82,10 +87,12 @@ _IND = {
 }
 
 _COLUMNS = ["country_iso3", "ref_date", "engine", "score", "label", "coverage_tier",
-           "confidence", "n_components", "n_expected", "components_json", "computed_at"]
+           "confidence", "n_components", "n_expected", "components_json", "computed_at",
+           "relative_score", "relative_label"]
 
 _EXPLICIT_RESERVE_CURRENCY = {"USA", "JPN", "GBR", "CHE"}
 _MIN_TREND_POINTS = 24   # reer_broad is monthly; require ~2y of history
+_OWN_HISTORY_MIN_OBS = 15
 
 
 def _pct_deviation_from_trend(s: Optional[pd.DataFrame], window_years: int = 10
@@ -154,40 +161,55 @@ def compute(con: duckdb.DuckDBPyConnection, ref_date, cfg: Optional[dict] = None
     max_age = settings.get("staleness_max_age_years", 4)
     reserve_discount = cfg.get("reserve_currency_discount", 0.6)
 
+    dev = {c["iso3"]: c.get("development", "EM") for c in get_countries()}
     reserve_currencies = _reserve_currency_iso3s()
 
-    panel = read_macro_panel_ext(db_path=hub_db_path)
+    panel = load_panel_ext(ref_date, hub_db_path)
     if panel.empty:
         return pd.DataFrame(columns=_COLUMNS)
     panel["date"] = pd.to_datetime(panel["date"])
     ref_ts = pd.Timestamp(ref_date)
+    cutoff = actual_cutoff(ref_date)
+    vintage_safe = used_asof_path(ref_date)
 
     sha = git_short_sha()
     now = datetime.now(timezone.utc)
-    rows = []
+    records = []
+    raw_by_component: "dict[str, dict]" = {}
     for country, cdf_full in panel.groupby("country_iso3"):
         cdf = cdf_full[cdf_full["date"] <= ref_ts]
         if cdf.empty:
             continue
         by_ind = {i: g[["date", "value"]] for i, g in cdf.groupby("indicator_id")}
 
-        current_account, ca_dt = fresh_latest(
-            _latest(_first_avail(by_ind, _IND["current_account"])), ref_ts, max_age)
-        niip, niip_dt = fresh_latest(_latest(_first_avail(by_ind, _IND["niip"])), ref_ts, max_age)
-        gdp_usd, _ = fresh_latest(_latest(_first_avail(by_ind, _IND["gdp_usd"])), ref_ts, max_age)
-        short_term_reserves, strd_dt = fresh_latest(
-            _latest(_first_avail(by_ind, _IND["short_term_debt_reserves"])), ref_ts, max_age)
-        debt_service_exports, dse_dt = fresh_latest(
-            _latest(_first_avail(by_ind, _IND["debt_service_exports"])), ref_ts, max_age)
-        fx_debt_share, fxd_dt = fresh_latest(
-            _latest(_first_avail(by_ind, _IND["fx_debt_share"])), ref_ts, max_age)
+        # clip_to_cutoff() on every candidate series here: all WEO/WDI/IIP/
+        # IIPCC annual LEVEL reads -- see scoring.actual_cutoff(). Clipping
+        # the series BEFORE _latest() (not rejecting the result afterward)
+        # is what lets a country with both a 2025 actual and a 2026 forecast
+        # row correctly fall back to the 2025 actual. REER-derived reads
+        # below (fx_overvaluation/fx_depreciation_12m) deliberately do NOT
+        # clip: reer_broad is BIS monthly with no forecast rows, gated on
+        # ref_ts + max_age only, same as private_credit's BIS reads.
+        s_ca = clip_to_cutoff(_first_avail(by_ind, _IND["current_account"]), cutoff)
+        current_account, ca_dt = fresh_latest(_latest(s_ca), ref_ts, max_age)
+        niip, niip_dt = fresh_latest(
+            _latest(clip_to_cutoff(_first_avail(by_ind, _IND["niip"]), cutoff)), ref_ts, max_age)
+        gdp_usd, _ = fresh_latest(
+            _latest(clip_to_cutoff(_first_avail(by_ind, _IND["gdp_usd"]), cutoff)), ref_ts, max_age)
+        s_strd = clip_to_cutoff(_first_avail(by_ind, _IND["short_term_debt_reserves"]), cutoff)
+        short_term_reserves, strd_dt = fresh_latest(_latest(s_strd), ref_ts, max_age)
+        s_dse = clip_to_cutoff(_first_avail(by_ind, _IND["debt_service_exports"]), cutoff)
+        debt_service_exports, dse_dt = fresh_latest(_latest(s_dse), ref_ts, max_age)
+        s_fxd = clip_to_cutoff(_first_avail(by_ind, _IND["fx_debt_share"]), cutoff)
+        fx_debt_share, fxd_dt = fresh_latest(_latest(s_fxd), ref_ts, max_age)
         # fresh_first_avail (not _first_avail+fresh_latest): "inflation" is a
         # 2-candidate fallback list (WEO then CPI) -- a stale WEO print must
         # not shadow a fresh CPI one (Codex review, same class of bug already
         # guarded against in sovereign_solvency.py).
-        inflation, infl_dt = fresh_first_avail(by_ind, _IND["inflation"], ref_ts, max_age)
-        reserves_months, resm_dt = fresh_latest(
-            _latest(_first_avail(by_ind, _IND["reserves_months"])), ref_ts, max_age)
+        s_infl = clip_to_cutoff(_first_avail(by_ind, _IND["inflation"]), cutoff)
+        inflation, infl_dt = fresh_first_avail(by_ind, _IND["inflation"], ref_ts, max_age, cutoff)
+        s_resm = clip_to_cutoff(_first_avail(by_ind, _IND["reserves_months"]), cutoff)
+        reserves_months, resm_dt = fresh_latest(_latest(s_resm), ref_ts, max_age)
 
         # REER history must come from the ref_date-filtered frame like every
         # other component: it is actual monthly BIS data (no forecasts), and
@@ -273,25 +295,76 @@ def compute(con: duckdb.DuckDBPyConnection, ref_date, cfg: Optional[dict] = None
         conf = confidence_for(tier)
         prev = prev_label(con, country, ENGINE, ref_date)
         label = bucket_with_hysteresis(score, bucket_thresholds, bucket_labels, prev, margin_pct)
+        data_through = max((d for d in obs_dates.values() if d), default=None)
+
+        # own-history percentile: current_account_deficit_gdp (sign-flipped
+        # current_account), short_term_debt_reserves, debt_service_exports,
+        # fx_debt_share, inflation and reserves_months (orientation=-1, lower
+        # is worse) all map onto a single indicator's own series;
+        # net_external_liability_gdp (niip/gdp ratio) and fx_overvaluation_pct
+        # (already itself a rolling-trend residual) are derived, see module.
+        pct_own_history = {
+            "current_account_deficit_gdp": own_history_pct(
+                s_ca, current_account, ca_dt, -1, _OWN_HISTORY_MIN_OBS),
+            "net_external_liability_gdp": None,
+            "short_term_debt_reserves": own_history_pct(
+                s_strd, raw_values["short_term_debt_reserves"], strd_dt, 1, _OWN_HISTORY_MIN_OBS),
+            "debt_service_exports": own_history_pct(
+                s_dse, raw_values["debt_service_exports"], dse_dt, 1, _OWN_HISTORY_MIN_OBS),
+            "fx_debt_share": own_history_pct(
+                s_fxd, raw_values["fx_debt_share"], fxd_dt, 1, _OWN_HISTORY_MIN_OBS),
+            "inflation": own_history_pct(s_infl, raw_values["inflation"], infl_dt, 1, _OWN_HISTORY_MIN_OBS),
+            "fx_overvaluation_pct": None,
+            "reserves_months": own_history_pct(
+                s_resm, raw_values["reserves_months"], resm_dt, -1, _OWN_HISTORY_MIN_OBS),
+        }
+
+        for comp, v in raw_values.items():
+            raw_by_component.setdefault(comp, {})[country] = v
+
+        records.append(dict(
+            country=country, score=score, label=label, tier=tier, conf=conf,
+            n_avail=n_avail, n_exp=n_exp, raw_values=raw_values, obs_dates=obs_dates,
+            components=components, pct_own_history=pct_own_history, data_through=data_through,
+            is_reserve_currency=is_reserve_currency, caveats=caveats,
+            fx_depreciation_12m=fx_depreciation_12m,
+        ))
+
+    if not records:
+        return pd.DataFrame(columns=_COLUMNS)
+
+    pct_group_by_component = {comp: percentile_group(vals, dev) for comp, vals in raw_by_component.items()}
+
+    rows = []
+    for r in records:
+        country = r["country"]
+        pct_group = {comp: pct_group_by_component[comp].get(country) for comp in r["raw_values"]}
+        relative_score = relative_score_from_pct_group(pct_group)
+        relative_label = bucket_with_hysteresis(relative_score, bucket_thresholds, bucket_labels, None, margin_pct)
 
         audit = {
-            "model_version": sha, "ref_date": str(ref_date), "asof": None,
-            "is_reserve_currency": is_reserve_currency, "caveats": caveats,
+            "model_version": sha, "ref_date": str(ref_date),
+            "asof": str(ref_date) if vintage_safe else None,
+            "data_through": r["data_through"],
+            "is_reserve_currency": r["is_reserve_currency"], "caveats": r["caveats"],
             # Fase 5 cycle-classifier input, not a scored component (see
             # module docstring above and cycle_classifier.py).
-            "fx_depreciation_12m_pct": (None if fx_depreciation_12m is None
-                                        else round(float(fx_depreciation_12m), 4)),
+            "fx_depreciation_12m_pct": (None if r["fx_depreciation_12m"] is None
+                                        else round(float(r["fx_depreciation_12m"]), 4)),
             "components": {
-                k: {"raw_value": round_or_none(raw_values.get(k)),
-                    "score": components[k], "weight": weights.get(k, 0),
-                    "obs_date": obs_dates.get(k)}
-                for k in components
+                k: {"raw_value": round_or_none(r["raw_values"].get(k)),
+                    "score": r["components"][k], "weight": weights.get(k, 0),
+                    "obs_date": r["obs_dates"].get(k),
+                    "pct_own_history": round_or_none(r["pct_own_history"].get(k)),
+                    "pct_group": round_or_none(pct_group.get(k))}
+                for k in r["components"]
             },
-            "missing_components": [k for k, v in components.items() if v is None],
-            "coverage_tier": tier, "vintage_safe": False,
+            "missing_components": [k for k, v in r["components"].items() if v is None],
+            "coverage_tier": r["tier"], "vintage_safe": vintage_safe,
         }
         rows.append((country, ref_date, ENGINE,
-                    None if score is None else round(score, 2), label, tier, conf,
-                    n_avail, n_exp, json.dumps(audit), now))
+                    None if r["score"] is None else round(r["score"], 2), r["label"], r["tier"], r["conf"],
+                    r["n_avail"], r["n_exp"], json.dumps(audit), now,
+                    round_or_none(relative_score), relative_label))
 
     return pd.DataFrame(rows, columns=_COLUMNS)

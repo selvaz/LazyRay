@@ -61,7 +61,7 @@ def validate() -> list[str]:
     v2_components = {
         "sovereign_solvency": {"debt_gdp", "net_debt_gdp", "interest_revenue",
                                "interest_gdp", "primary_deficit_gdp", "r_minus_g",
-                               "debt_trend_5y"},
+                               "debt_trend_5y", "debt_p_up_5y"},
         "political_execution": {"government_effectiveness", "rule_of_law",
                                 "control_corruption", "political_stability",
                                 "regulatory_quality"},
@@ -71,7 +71,12 @@ def validate() -> list[str]:
                                 "short_term_debt_reserves", "debt_service_exports",
                                 "fx_debt_share", "inflation", "fx_overvaluation_pct",
                                 "reserves_months"},
-        "funding_liquidity": {"short_term_debt_reserves", "yield_change_12m_pp"},
+        # WP2/C (docs/DALIO_PROD_ASSESSMENT_2026-09.md Sec.3.1.7): split into
+        # a market branch (yield_change_12m_pp/term_spread_pp/
+        # reer_change_12m_pct) and an external branch (short_term_debt_
+        # reserves/debt_service_exports) -- see funding_liquidity.py.
+        "funding_liquidity": {"short_term_debt_reserves", "yield_change_12m_pp",
+                              "term_spread_pp", "reer_change_12m_pct", "debt_service_exports"},
     }
     for engine, expected in v2_components.items():
         cfg = v2.get(engine) or {}
@@ -105,7 +110,7 @@ def validate() -> list[str]:
     # bucket_labels -- same typo/silent-fallback risk as the weight keys
     # above, but for label SETS instead of numeric weights.
     v2_bucket_label_defaults = {
-        "sovereign_solvency": ["strong", "stable", "watch", "stressed", "critical"],
+        "sovereign_solvency": ["low", "moderate", "elevated", "high", "critical"],
         "funding_liquidity": ["easy", "normal", "watch", "stress", "severe"],
         "private_credit": ["low", "moderate", "elevated", "high", "bubble"],
         "external_constraint": ["low", "moderate", "elevated", "high", "severe"],
