@@ -134,6 +134,16 @@ def test_digest_partial_coverage_and_elevated_transition_does_not_notify():
 
 def test_notify_exit_code_and_force_send(monkeypatch):
     db = Path(__file__).parent / f".stress-command-{uuid4().hex}.duckdb"
+    # A real (non-mocked) run_monitor() always calls persist.write_results
+    # for a non-dry-run, which applies the stress schema unconditionally
+    # under the lock before this test's stubbed run_monitor ever runs --
+    # so the digest block downstream can now assume the schema already
+    # exists and rightly no longer reapplies it itself. Mocking run_monitor
+    # out here skips that real call, so recreate its one guaranteed
+    # side effect directly to keep this stub faithful to production.
+    _con = duckdb.connect(str(db))
+    apply_schema(_con)
+    _con.close()
     empty = {"index_rows": [], "components": [], "missing": {"us": []}}
     monkeypatch.setattr(command, "run_monitor", lambda *args, **kwargs: empty)
     monkeypatch.setattr(sys, "argv", ["run_stress_monitor.py", "--region", "us", "--db", str(db), "--notify"])
@@ -185,6 +195,47 @@ def test_lock_contention_after_run_monitor_still_skips_with_exit_3(monkeypatch, 
     out = capsys.readouterr().out
     assert "Another writer holds the DB lock" in out
     assert "recomputes the full history" in out
+
+
+def test_digest_block_opens_read_only_and_skips_apply_schema(monkeypatch):
+    # Regression for the read-write reopen this fix closes: run_dalio_v2.py
+    # opens its own read-only report connection *outside* lock.py's advisory
+    # lock (lock.py's contract has readers skip it entirely), so a read-write
+    # reopen here collides with that reader at the DuckDB file level with a
+    # raw IOException -- not a DBLockTimeout, so it used to escape the except
+    # clause below and turn the scheduled task red. The digest block must
+    # therefore (a) open get_conn(args.db, read_only=True) -- asserted here on
+    # the actual argument passed, not on DuckDB's own locking behaviour, which
+    # is exercised separately -- and (b) no longer call apply_schema, since
+    # persist.write_results already applies it unconditionally under the lock
+    # inside run_monitor, before this block ever reopens the file.
+    assert not hasattr(command, "apply_schema")  # the redundant import is gone
+    db = Path(__file__).parent / f".stress-readonly-{uuid4().hex}.duckdb"
+    # A real (non-mocked) run_monitor() always applies the stress schema
+    # via persist.write_results before the digest block ever reopens the
+    # file (see comment above); recreate that guaranteed precondition
+    # directly since this test stubs run_monitor out entirely.
+    _con = duckdb.connect(str(db))
+    apply_schema(_con)
+    _con.close()
+    empty = {"index_rows": [], "components": [], "missing": {"us": []}}
+    monkeypatch.setattr(command, "run_monitor", lambda *args, **kwargs: empty)
+    calls = []
+    real_get_conn = command.get_conn
+
+    def spying_get_conn(*args, **kwargs):
+        calls.append((args, kwargs))
+        return real_get_conn(*args, **kwargs)
+
+    monkeypatch.setattr(command, "get_conn", spying_get_conn)
+    monkeypatch.setattr(sys, "argv", ["run_stress_monitor.py", "--region", "us", "--db", str(db)])
+    try:
+        assert command.main() == 0
+        assert calls and calls[-1][1].get("read_only") is True
+    finally:
+        for path in (db, Path(f"{db}.lock")):
+            if path.exists():
+                path.unlink()
 
 
 def test_other_exceptions_still_propagate(monkeypatch):

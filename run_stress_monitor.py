@@ -10,7 +10,6 @@ from lazyray.db.connection import get_conn
 from lazyray.lock import DBLockTimeout, db_write_lock
 from lazyray.stress.config import REGIONS
 from lazyray.stress.digest import build_digest, should_notify
-from lazyray.stress.persist import apply_schema
 from lazyray.stress.pipeline import run_monitor
 
 
@@ -59,16 +58,36 @@ def main() -> int:
             return 0
         # run_monitor() takes and releases the write lock internally (via
         # persist.write_results), so by the time we get here it is free.
-        # This block reopens the same DuckDB file -- apply_schema() is a
-        # write (CREATE/ALTER) -- so it needs its own, separate acquisition
-        # of the same lock. Nesting it around run_monitor would deadlock
-        # (the lock isn't reentrant); taking it here, after run_monitor has
-        # returned, is what keeps this second reopen inside the same
-        # DBLockTimeout handling as the first.
+        # This block reopens the same DuckDB file to build the digest, and
+        # it is a pure read: build_digest/should_notify only SELECT, and
+        # write_results already ran apply_schema unconditionally under the
+        # lock above (inside run_monitor), so the schema is guaranteed to
+        # exist here -- reapplying it in this block would be redundant.
+        # That said, this block still opens the connection read_only=True
+        # AND still takes db_write_lock around it, which looks like taking
+        # a writer lock just to read. It is not redundant: DuckDB's own
+        # single-writer-or-many-readers rule is stricter than what the
+        # advisory lock models. lock.py's contract has readers skip the
+        # lock entirely, so a reader outside the lock and a writer inside
+        # it still collide at the file level with a raw IOException that
+        # DBLockTimeout does not catch -- exactly what happens when the
+        # sibling ray_dalio_v2 job opens its own read-only report
+        # connection (run_dalio_v2.py:106, deliberately outside its lock)
+        # while this monitor reopens the file to write. Taking the lock
+        # here turns that case into one of the two outcomes DuckDB
+        # actually allows:
+        #   - Dalio is writing (holds the lock): we block on the lock and
+        #     get DBLockTimeout, already handled below with exit 3.
+        #   - Dalio is reading (outside the lock): we acquire the lock and
+        #     open read_only=True, so its reader and our reader coexist --
+        #     DuckDB always allows multiple simultaneous readers.
+        #   - nobody else is active: normal case.
+        # Opening this connection read-write instead would leave the
+        # middle case broken -- a writer colliding with Dalio's unlocked
+        # reader -- which is the defect this fix closes.
         with db_write_lock(args.db):
-            con = get_conn(args.db)
+            con = get_conn(args.db, read_only=True)
             try:
-                apply_schema(con)
                 digest = build_digest(con, regions, args.as_of)
                 print(digest)
                 warranted = should_notify(con, args.as_of)
