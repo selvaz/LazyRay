@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 from uuid import uuid4
 
+from lazyray.lock import DBLockTimeout
 from lazyray.stress.digest import build_digest, should_notify
 from lazyray.stress.persist import apply_schema
 from lazyray.stress.config import Indicator, Region, Segment
@@ -142,3 +143,27 @@ def test_notify_exit_code_and_force_send(monkeypatch):
     assert command.main() == 0
     assert sent == [""]
     db.unlink()
+
+
+def test_lock_contention_skips_with_exit_3_not_a_traceback(monkeypatch, capsys):
+    def locked(*args, **kwargs):
+        raise DBLockTimeout("Another writer holds the DB lock (fake.lock); skipping this run.")
+    monkeypatch.setattr(command, "run_monitor", locked)
+    monkeypatch.setattr(sys, "argv", ["run_stress_monitor.py", "--region", "us", "--db", "unused.duckdb"])
+    assert command.main() == 3
+    out = capsys.readouterr().out
+    assert "Another writer holds the DB lock" in out
+    assert "recomputes the full history" in out
+
+
+def test_other_exceptions_still_propagate(monkeypatch):
+    def broken(*args, **kwargs):
+        raise ValueError("boom")
+    monkeypatch.setattr(command, "run_monitor", broken)
+    monkeypatch.setattr(sys, "argv", ["run_stress_monitor.py", "--region", "us", "--db", "unused.duckdb"])
+    try:
+        command.main()
+    except ValueError as exc:
+        assert str(exc) == "boom"
+    else:
+        raise AssertionError("expected ValueError to propagate, not be swallowed")

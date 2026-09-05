@@ -7,6 +7,7 @@ import tempfile
 from datetime import date
 
 from lazyray.db.connection import get_conn
+from lazyray.lock import DBLockTimeout
 from lazyray.stress.config import REGIONS
 from lazyray.stress.digest import build_digest, should_notify
 from lazyray.stress.persist import apply_schema
@@ -39,7 +40,17 @@ def main() -> int:
     unknown = set(regions) - set(REGIONS)
     if unknown:
         p.error(f"unknown region(s): {', '.join(sorted(unknown))}")
-    result = run_monitor(regions, hub_db=args.hub_db, db_path=args.db, as_of=args.as_of, write=not args.dry_run)
+    try:
+        result = run_monitor(regions, hub_db=args.hub_db, db_path=args.db, as_of=args.as_of, write=not args.dry_run)
+    except DBLockTimeout as exc:
+        # The sibling ray_dalio_v2 job writes the same DuckDB file and can
+        # still hold the lock when the two are triggered close together
+        # (e.g. StartWhenAvailable catching up after a weekend). This
+        # monitor recomputes every region's full history on each run, so a
+        # skipped run loses nothing -- the next run rebuilds it all,
+        # including today. Exit 3 ("nothing to do"), not a red task.
+        print(f"{exc} The next run recomputes the full history, so nothing is lost.")
+        return 3
     if args.dry_run:
         # Use the normal persistence/digest path in a disposable database so
         # operators preview precisely the message a real run would produce.
