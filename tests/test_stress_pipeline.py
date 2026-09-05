@@ -3,9 +3,11 @@ import numpy as np
 import pandas as pd
 import run_stress_monitor as command
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 from uuid import uuid4
 
+from lazyray.lock import DBLockTimeout
 from lazyray.stress.digest import build_digest, should_notify
 from lazyray.stress.persist import apply_schema
 from lazyray.stress.config import Indicator, Region, Segment
@@ -132,6 +134,16 @@ def test_digest_partial_coverage_and_elevated_transition_does_not_notify():
 
 def test_notify_exit_code_and_force_send(monkeypatch):
     db = Path(__file__).parent / f".stress-command-{uuid4().hex}.duckdb"
+    # A real (non-mocked) run_monitor() always calls persist.write_results
+    # for a non-dry-run, which applies the stress schema unconditionally
+    # under the lock before this test's stubbed run_monitor ever runs --
+    # so the digest block downstream can now assume the schema already
+    # exists and rightly no longer reapplies it itself. Mocking run_monitor
+    # out here skips that real call, so recreate its one guaranteed
+    # side effect directly to keep this stub faithful to production.
+    _con = duckdb.connect(str(db))
+    apply_schema(_con)
+    _con.close()
     empty = {"index_rows": [], "components": [], "missing": {"us": []}}
     monkeypatch.setattr(command, "run_monitor", lambda *args, **kwargs: empty)
     monkeypatch.setattr(sys, "argv", ["run_stress_monitor.py", "--region", "us", "--db", str(db), "--notify"])
@@ -142,3 +154,98 @@ def test_notify_exit_code_and_force_send(monkeypatch):
     assert command.main() == 0
     assert sent == [""]
     db.unlink()
+
+
+def test_lock_contention_skips_with_exit_3_not_a_traceback(monkeypatch, capsys):
+    def locked(*args, **kwargs):
+        raise DBLockTimeout("Another writer holds the DB lock (fake.lock); skipping this run.")
+    monkeypatch.setattr(command, "run_monitor", locked)
+    monkeypatch.setattr(sys, "argv", ["run_stress_monitor.py", "--region", "us", "--db", "unused.duckdb"])
+    assert command.main() == 3
+    out = capsys.readouterr().out
+    assert "Another writer holds the DB lock" in out
+    assert "recomputes the full history" in out
+
+
+def test_lock_contention_after_run_monitor_still_skips_with_exit_3(monkeypatch, capsys):
+    # Regression for the gap left by test_lock_contention_skips_with_exit_3_not_a_traceback:
+    # that test only covers contention while run_monitor() itself holds the lock. But
+    # persist.write_results acquires and releases the lock *inside* run_monitor, so by the
+    # time run_monitor() returns here it is already free. The digest block right after
+    # (get_conn + apply_schema + build_digest + should_notify) reopens the same DuckDB file
+    # unprotected and, if a sibling writer grabs the lock in that gap, used to raise a raw
+    # DuckDB locking error instead of DBLockTimeout -- escaping this except clause and
+    # turning the scheduled task red in exactly the StartWhenAvailable catch-up scenario the
+    # original fix targeted. Simulate that second-phase contention directly on
+    # command.db_write_lock (the reference the digest block now takes) and confirm it still
+    # degrades to a clean exit 3 with the same message, not a propagated exception.
+    monkeypatch.setattr(
+        command, "run_monitor",
+        lambda *a, **kw: {"index_rows": [], "components": [], "missing": {"us": []}},
+    )
+
+    @contextmanager
+    def contended_after_run_monitor(*args, **kwargs):
+        raise DBLockTimeout("Another writer holds the DB lock (fake.lock); skipping this run.")
+        yield  # pragma: no cover - unreachable; keeps this a generator for @contextmanager
+
+    monkeypatch.setattr(command, "db_write_lock", contended_after_run_monitor)
+    monkeypatch.setattr(sys, "argv", ["run_stress_monitor.py", "--region", "us", "--db", "unused.duckdb"])
+    assert command.main() == 3
+    out = capsys.readouterr().out
+    assert "Another writer holds the DB lock" in out
+    assert "recomputes the full history" in out
+
+
+def test_digest_block_opens_read_only_and_skips_apply_schema(monkeypatch):
+    # Regression for the read-write reopen this fix closes: run_dalio_v2.py
+    # opens its own read-only report connection *outside* lock.py's advisory
+    # lock (lock.py's contract has readers skip it entirely), so a read-write
+    # reopen here collides with that reader at the DuckDB file level with a
+    # raw IOException -- not a DBLockTimeout, so it used to escape the except
+    # clause below and turn the scheduled task red. The digest block must
+    # therefore (a) open get_conn(args.db, read_only=True) -- asserted here on
+    # the actual argument passed, not on DuckDB's own locking behaviour, which
+    # is exercised separately -- and (b) no longer call apply_schema, since
+    # persist.write_results already applies it unconditionally under the lock
+    # inside run_monitor, before this block ever reopens the file.
+    assert not hasattr(command, "apply_schema")  # the redundant import is gone
+    db = Path(__file__).parent / f".stress-readonly-{uuid4().hex}.duckdb"
+    # A real (non-mocked) run_monitor() always applies the stress schema
+    # via persist.write_results before the digest block ever reopens the
+    # file (see comment above); recreate that guaranteed precondition
+    # directly since this test stubs run_monitor out entirely.
+    _con = duckdb.connect(str(db))
+    apply_schema(_con)
+    _con.close()
+    empty = {"index_rows": [], "components": [], "missing": {"us": []}}
+    monkeypatch.setattr(command, "run_monitor", lambda *args, **kwargs: empty)
+    calls = []
+    real_get_conn = command.get_conn
+
+    def spying_get_conn(*args, **kwargs):
+        calls.append((args, kwargs))
+        return real_get_conn(*args, **kwargs)
+
+    monkeypatch.setattr(command, "get_conn", spying_get_conn)
+    monkeypatch.setattr(sys, "argv", ["run_stress_monitor.py", "--region", "us", "--db", str(db)])
+    try:
+        assert command.main() == 0
+        assert calls and calls[-1][1].get("read_only") is True
+    finally:
+        for path in (db, Path(f"{db}.lock")):
+            if path.exists():
+                path.unlink()
+
+
+def test_other_exceptions_still_propagate(monkeypatch):
+    def broken(*args, **kwargs):
+        raise ValueError("boom")
+    monkeypatch.setattr(command, "run_monitor", broken)
+    monkeypatch.setattr(sys, "argv", ["run_stress_monitor.py", "--region", "us", "--db", "unused.duckdb"])
+    try:
+        command.main()
+    except ValueError as exc:
+        assert str(exc) == "boom"
+    else:
+        raise AssertionError("expected ValueError to propagate, not be swallowed")

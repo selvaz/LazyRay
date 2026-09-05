@@ -224,13 +224,14 @@ def main() -> int:
     ref_date = _ref_date_from_report(report)
     attach_full = args.attach_full or args.monthly
 
-    con = get_conn(args.db)
-    try:
-        text, brief_path = _ensure_brief_html(con, ref_date, brief_dir)
-        if args.monthly_auto and monthly_attach_due(con, ref_date):
-            attach_full = True
-    finally:
-        con.close()
+    with db_write_lock(args.db):
+        con = get_conn(args.db)
+        try:
+            text, brief_path = _ensure_brief_html(con, ref_date, brief_dir)
+            if args.monthly_auto and monthly_attach_due(con, ref_date):
+                attach_full = True
+        finally:
+            con.close()
 
     message = text + "\n" + _attachment_line(brief_path, attach_full, report)
 

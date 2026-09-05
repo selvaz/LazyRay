@@ -36,6 +36,7 @@ from lazyray.config_loader import get_settings
 from lazyray.dalio_v2.report import collect, generate_html_report, to_csv
 from lazyray.dalio_v2.runner import run_dalio_v2
 from lazyray.db.connection import get_conn
+from lazyray.lock import db_write_lock
 
 
 def _reports_root() -> Path:
@@ -103,30 +104,55 @@ def main() -> int:
         print("No scores written (empty macro_panel?) - skipping report.", file=sys.stderr)
         return 1
 
-    con = get_conn(args.db, read_only=True)
-    try:
-        out_dir = _report_dir()
-        html_path = generate_html_report(con, ref_date, out_dir, engines=engines)
-        print(f"Report: {html_path}")
-        if args.csv:
-            df = collect(con, ref_date, engines)
-            csv_path = to_csv(df, out_dir / f"dalio_v2_{ref_date}.csv")
-            print(f"CSV:    {csv_path}")
+    # run_dalio_v2() above already acquired and released db_write_lock
+    # internally -- runner.py's `with db_write_lock(db_path):` spans the
+    # whole function body and con.close() runs before it returns -- so the
+    # lock is free by the time we get here. This block reopens the same
+    # DuckDB file read_only=True to render the report/Brief, which looks
+    # like a pure read needing no coordination. It is not: DuckDB allows
+    # only a single writer OR multiple readers per file, never a mix, and
+    # rejects the wrong combination in either direction with a raw
+    # IOException at open time -- not lock.py's DBLockTimeout. The sibling
+    # stress monitor (run_stress_monitor.py) opens a writer under this same
+    # lock (lazyray/stress/persist.py::write_results), and in the overlap
+    # scenario the monitor is waiting on the lock and gets released right
+    # when this phase starts -- so an unlocked reader here collided with
+    # that writer almost every time, not rarely. Taking the lock again here
+    # (fresh, AFTER the write phase's `with` block above has already
+    # exited -- db_write_lock is not reentrant, nesting it would deadlock
+    # against ourselves) turns that collision into contention on the lock,
+    # i.e. DBLockTimeout, which the stress monitor already handles with its
+    # own exit 3.
+    #
+    # Deliberately NOT caught here: if this phase can't get the lock, this
+    # run fails and the task goes red. Dalio is the producer of the Brief;
+    # a swallowed exit-3-style "nothing to do" here would look green while
+    # silently never sending a Brief. See docs/DALIO_PROD_ASSESSMENT_2026-09.md.
+    with db_write_lock(args.db):
+        con = get_conn(args.db, read_only=True)
+        try:
+            out_dir = _report_dir()
+            html_path = generate_html_report(con, ref_date, out_dir, engines=engines)
+            print(f"Report: {html_path}")
+            if args.csv:
+                df = collect(con, ref_date, engines)
+                csv_path = to_csv(df, out_dir / f"dalio_v2_{ref_date}.csv")
+                print(f"CSV:    {csv_path}")
 
-        # The Brief (docs/DALIO_PROD_ASSESSMENT_2026-09.md): the one output a
-        # human reads, built from the same ref_date's engine_scores/
-        # dalio_cycle_v2/run_meta/stress_* rows this run just wrote. Never
-        # blocks the exit code on a Brief-rendering problem -- the engine
-        # scores and the old report above are already safely on disk by the
-        # time this runs.
-        brief_dir = _brief_dir()
-        brief_dir.mkdir(parents=True, exist_ok=True)
-        brief_path = brief_dir / f"lazyray_brief_{ref_date}.html"
-        _, brief_html = build_brief(con, ref_date)
-        brief_path.write_text(brief_html, encoding="utf-8")
-        print(f"Brief:  {brief_path}")
-    finally:
-        con.close()
+            # The Brief (docs/DALIO_PROD_ASSESSMENT_2026-09.md): the one output a
+            # human reads, built from the same ref_date's engine_scores/
+            # dalio_cycle_v2/run_meta/stress_* rows this run just wrote. Never
+            # blocks the exit code on a Brief-rendering problem -- the engine
+            # scores and the old report above are already safely on disk by the
+            # time this runs.
+            brief_dir = _brief_dir()
+            brief_dir.mkdir(parents=True, exist_ok=True)
+            brief_path = brief_dir / f"lazyray_brief_{ref_date}.html"
+            _, brief_html = build_brief(con, ref_date)
+            brief_path.write_text(brief_html, encoding="utf-8")
+            print(f"Brief:  {brief_path}")
+        finally:
+            con.close()
     return 0
 
 

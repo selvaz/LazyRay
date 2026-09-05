@@ -139,8 +139,11 @@ def get_conn(db_path: Optional[str] = None, *, read_only: bool = False
              ) -> duckdb.DuckDBPyConnection:
     """
     Open (creating if absent) LazyRay's own DuckDB database and ensure the
-    schema. read_only=True for readers so multiple processes can read in
-    parallel without locking.
+    schema. read_only=True lets multiple readers share the file among
+    themselves, but DuckDB still rejects any reader-vs-writer mix across
+    processes with an IOException at open time -- so every open of this
+    file, in either mode, still needs db_write_lock() (see lazyray/lock.py)
+    whenever a writer could be running concurrently.
     """
     path = _resolve_db_path(db_path)
     Path(path).parent.mkdir(parents=True, exist_ok=True)
