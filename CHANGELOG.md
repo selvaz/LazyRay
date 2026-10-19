@@ -5,6 +5,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.5] — 2026-10-19
+
+Release set `ecosystem-2026.10.6`. Only sibling pins move; no code changes.
+
+### Changed
+- `market-data-hub` pinned at `v0.3.3` (was `v0.3.2`); the `telegram` extra's `lazytoolkit` at `v0.10.4` (was `v0.10.3`).
+
 ## [0.2.4] — 2026-10-18
 
 Release set `ecosystem-2026.10.5`. Only sibling pins move; no code changes.
