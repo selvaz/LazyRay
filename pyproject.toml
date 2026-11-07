@@ -52,7 +52,7 @@ dependencies = [
 # this extra on 3.9 or 3.10 must fail loudly rather than install nothing and
 # leave the send broken at runtime. The core, the tests and --dry-run never
 # import it.
-telegram = ["lazytoolkit[telegram] @ git+https://github.com/selvaz/LazyTools.git@v0.10.5"]
+telegram = ["lazytoolkit[telegram] @ git+https://github.com/selvaz/LazyTools.git@v0.10.6"]
 
 dev = [
     "pytest>=7.0", "pytest-cov>=4.0", "pytest-randomly>=3.12", "ruff<0.16", "pip-audit",
