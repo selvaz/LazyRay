@@ -5,6 +5,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- Sovereign rates use hub resolved concepts in the stress monitor and Dalio panels. Resolved history is not point-in-time; observation-date history is used. Stress output exposes current leg status and mismatches.
+- Updated the market-data-hub pin from v0.3.22 to v0.3.26.
+
 ## [0.2.10] — 2026-11-04
 
 ### Changed

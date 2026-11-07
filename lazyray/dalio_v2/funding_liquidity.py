@@ -7,7 +7,7 @@ with only a 10Y yield, 18 with only short-term-debt/reserves, 14 with
 neither) under one "easy/stress" scale as if they were comparable. They are
 not, so this module now reports which branch produced a score:
 
-  - "market"   (OECD-32ish): bond_yield_10y is fresh -- yield_change_12m_pp
+  - "market"   (resolved sovereign yields): bond_yield_10y is fresh -- yield_change_12m_pp
     (existing), term_spread_pp (10Y minus bis_policy_rate: an inverted/
     flattening curve is the classic funding-stress signal, so this is scored
     orientation=-1, lower is worse), reer_change_12m_pct (12-month REER
@@ -29,6 +29,7 @@ country's own balance sheet, which this engine does not model. Per the WP2
 spec, when unsure the magnitude alone (abs % change) is scored: a big REER
 swing either way is treated as a funding-conditions shock.
 """
+
 from __future__ import annotations
 
 import json
@@ -43,10 +44,20 @@ from lazyray.config_loader import get_settings
 from lazyray.dalio import _first_avail, _latest
 from lazyray.dalio_v2.panel import load_panel_ext, used_asof_path
 from lazyray.dalio_v2.scoring import (
-    actual_cutoff, bucket_with_hysteresis, clip_to_cutoff, confidence_for,
-    fresh_latest, git_short_sha, own_history_pct, percentile_group,
-    prev_label, relative_score_from_pct_group, round_or_none, score_threshold,
-    suppress_insufficient, weighted_average,
+    actual_cutoff,
+    bucket_with_hysteresis,
+    clip_to_cutoff,
+    confidence_for,
+    fresh_latest,
+    git_short_sha,
+    own_history_pct,
+    percentile_group,
+    prev_label,
+    relative_score_from_pct_group,
+    round_or_none,
+    score_threshold,
+    suppress_insufficient,
+    weighted_average,
 )
 
 ENGINE = "funding_liquidity"
@@ -62,9 +73,21 @@ _IND = {
 _MARKET_COMPONENTS = ("yield_change_12m_pp", "term_spread_pp", "reer_change_12m_pct")
 _EXTERNAL_COMPONENTS = ("short_term_debt_reserves", "debt_service_exports")
 
-_COLUMNS = ["country_iso3", "ref_date", "engine", "score", "label", "coverage_tier",
-           "confidence", "n_components", "n_expected", "components_json", "computed_at",
-           "relative_score", "relative_label"]
+_COLUMNS = [
+    "country_iso3",
+    "ref_date",
+    "engine",
+    "score",
+    "label",
+    "coverage_tier",
+    "confidence",
+    "n_components",
+    "n_expected",
+    "components_json",
+    "computed_at",
+    "relative_score",
+    "relative_label",
+]
 
 _OWN_HISTORY_MIN_OBS = 15
 
@@ -82,7 +105,9 @@ def _yoy_level_change(s: Optional[pd.DataFrame]) -> Optional[float]:
         return None
     latest_date, latest_val = d["date"].iloc[-1], d["value"].iloc[-1]
     target = latest_date - pd.DateOffset(months=12)
-    prior = d[(d["date"] <= target) & (d["date"] >= latest_date - pd.DateOffset(months=18))]
+    prior = d[
+        (d["date"] <= target) & (d["date"] >= latest_date - pd.DateOffset(months=18))
+    ]
     if prior.empty:
         return None
     prior_val = prior["value"].iloc[-1]
@@ -102,7 +127,9 @@ def _yoy_pct_change_abs(s: Optional[pd.DataFrame]) -> Optional[float]:
         return None
     latest_date, latest_val = d["date"].iloc[-1], d["value"].iloc[-1]
     target = latest_date - pd.DateOffset(months=12)
-    prior = d[(d["date"] <= target) & (d["date"] >= latest_date - pd.DateOffset(months=18))]
+    prior = d[
+        (d["date"] <= target) & (d["date"] >= latest_date - pd.DateOffset(months=18))
+    ]
     if prior.empty:
         return None
     prior_val = prior["value"].iloc[-1]
@@ -111,14 +138,20 @@ def _yoy_pct_change_abs(s: Optional[pd.DataFrame]) -> Optional[float]:
     return float(abs(latest_val - prior_val) / abs(prior_val) * 100.0)
 
 
-def compute(con: duckdb.DuckDBPyConnection, ref_date, cfg: Optional[dict] = None,
-           hub_db_path: Optional[str] = None) -> pd.DataFrame:
+def compute(
+    con: duckdb.DuckDBPyConnection,
+    ref_date,
+    cfg: Optional[dict] = None,
+    hub_db_path: Optional[str] = None,
+) -> pd.DataFrame:
     settings = get_settings().get("dalio_v2", {})
     cfg = cfg or settings.get("funding_liquidity", {})
     th = cfg.get("thresholds", {})
     weights = cfg.get("weights", {})
     bucket_thresholds = cfg.get("bucket_thresholds", [20, 40, 60, 80])
-    bucket_labels = cfg.get("bucket_labels", ["easy", "normal", "watch", "stress", "severe"])
+    bucket_labels = cfg.get(
+        "bucket_labels", ["easy", "normal", "watch", "stress", "severe"]
+    )
     margin_pct = settings.get("hysteresis_margin_pct", 0.10)
     max_age = settings.get("staleness_max_age_years", 4)
     # debt_service_exports thresholds REUSED from external_constraint.py, not
@@ -152,7 +185,9 @@ def compute(con: duckdb.DuckDBPyConnection, ref_date, cfg: Optional[dict] = None
         latest_yield, yield_dt = fresh_latest(_latest(s_yield), ref_ts, max_age)
         # short_term_debt_reserves is WDI annual (LEVEL, clipped to cutoff
         # BEFORE picking latest -- see scoring.actual_cutoff()/clip_to_cutoff()).
-        s_strd = clip_to_cutoff(_first_avail(by_ind, _IND["short_term_debt_reserves"]), cutoff)
+        s_strd = clip_to_cutoff(
+            _first_avail(by_ind, _IND["short_term_debt_reserves"]), cutoff
+        )
         short_term_reserves, strd_dt = fresh_latest(_latest(s_strd), ref_ts, max_age)
 
         # branch selection: market first (a country with both keeps market,
@@ -171,20 +206,32 @@ def compute(con: duckdb.DuckDBPyConnection, ref_date, cfg: Optional[dict] = None
 
         if branch == "market":
             active_components = _MARKET_COMPONENTS
-            yield_change = _yoy_level_change(s_yield) if latest_yield is not None else None
+            yield_change = (
+                _yoy_level_change(s_yield) if latest_yield is not None else None
+            )
             s_policy = by_ind.get(_IND["bis_policy_rate"])
             latest_policy, policy_dt = fresh_latest(_latest(s_policy), ref_ts, max_age)
-            term_spread = (latest_yield - latest_policy) \
-                if latest_yield is not None and latest_policy is not None else None
+            term_spread = (
+                (latest_yield - latest_policy)
+                if latest_yield is not None and latest_policy is not None
+                else None
+            )
             s_reer = by_ind.get(_IND["reer"])
             latest_reer, reer_dt = fresh_latest(_latest(s_reer), ref_ts, max_age)
-            reer_change = _yoy_pct_change_abs(s_reer) if latest_reer is not None else None
+            reer_change = (
+                _yoy_pct_change_abs(s_reer) if latest_reer is not None else None
+            )
 
-            raw_values = {"yield_change_12m_pp": yield_change, "term_spread_pp": term_spread,
-                         "reer_change_12m_pct": reer_change}
-            obs_dates = {"yield_change_12m_pp": yield_dt,
-                        "term_spread_pp": (policy_dt if term_spread is not None else None),
-                        "reer_change_12m_pct": (reer_dt if reer_change is not None else None)}
+            raw_values = {
+                "yield_change_12m_pp": yield_change,
+                "term_spread_pp": term_spread,
+                "reer_change_12m_pct": reer_change,
+            }
+            obs_dates = {
+                "yield_change_12m_pp": yield_dt,
+                "term_spread_pp": (policy_dt if term_spread is not None else None),
+                "reer_change_12m_pct": (reer_dt if reer_change is not None else None),
+            }
             # all three are 12m-change/spread derivations of a single series
             # (or a 2-series subtraction) -- no direct "own history of the
             # change itself" series is assembled, see module docstring's
@@ -197,32 +244,54 @@ def compute(con: duckdb.DuckDBPyConnection, ref_date, cfg: Optional[dict] = None
             # never been hit).
             watch, stress_thr, critical = th.get("term_spread_pp", [1.0, 0.0, -1.0])
             components = {
-                "yield_change_12m_pp": None if yield_change is None else
-                    score_threshold(yield_change, *th.get("yield_change_12m_pp", [1.0, 2.0, 3.5])),
-                "term_spread_pp": None if term_spread is None else
-                    score_threshold(term_spread, watch, stress_thr, critical, -1),
-                "reer_change_12m_pct": None if reer_change is None else
-                    score_threshold(reer_change, *th.get("reer_change_12m_pct", [10.0, 15.0, 25.0])),
+                "yield_change_12m_pp": None
+                if yield_change is None
+                else score_threshold(
+                    yield_change, *th.get("yield_change_12m_pp", [1.0, 2.0, 3.5])
+                ),
+                "term_spread_pp": None
+                if term_spread is None
+                else score_threshold(term_spread, watch, stress_thr, critical, -1),
+                "reer_change_12m_pct": None
+                if reer_change is None
+                else score_threshold(
+                    reer_change, *th.get("reer_change_12m_pct", [10.0, 15.0, 25.0])
+                ),
             }
         elif branch == "external":
             active_components = _EXTERNAL_COMPONENTS
-            s_dse = clip_to_cutoff(_first_avail(by_ind, _IND["debt_service_exports"]), cutoff)
+            s_dse = clip_to_cutoff(
+                _first_avail(by_ind, _IND["debt_service_exports"]), cutoff
+            )
             debt_service_exports, dse_dt = fresh_latest(_latest(s_dse), ref_ts, max_age)
 
-            raw_values = {"short_term_debt_reserves": short_term_reserves,
-                         "debt_service_exports": debt_service_exports}
-            obs_dates = {"short_term_debt_reserves": strd_dt, "debt_service_exports": dse_dt}
+            raw_values = {
+                "short_term_debt_reserves": short_term_reserves,
+                "debt_service_exports": debt_service_exports,
+            }
+            obs_dates = {
+                "short_term_debt_reserves": strd_dt,
+                "debt_service_exports": dse_dt,
+            }
             pct_own_history = {
                 "short_term_debt_reserves": own_history_pct(
-                    s_strd, short_term_reserves, strd_dt, 1, _OWN_HISTORY_MIN_OBS),
+                    s_strd, short_term_reserves, strd_dt, 1, _OWN_HISTORY_MIN_OBS
+                ),
                 "debt_service_exports": own_history_pct(
-                    s_dse, debt_service_exports, dse_dt, 1, _OWN_HISTORY_MIN_OBS),
+                    s_dse, debt_service_exports, dse_dt, 1, _OWN_HISTORY_MIN_OBS
+                ),
             }
             components = {
                 "short_term_debt_reserves": score_threshold(
-                    short_term_reserves, *th.get("short_term_debt_reserves", [50, 100, 150])),
-                "debt_service_exports": None if debt_service_exports is None else
-                    score_threshold(debt_service_exports, *ext_th.get("debt_service_exports", [15, 25, 40])),
+                    short_term_reserves,
+                    *th.get("short_term_debt_reserves", [50, 100, 150]),
+                ),
+                "debt_service_exports": None
+                if debt_service_exports is None
+                else score_threshold(
+                    debt_service_exports,
+                    *ext_th.get("debt_service_exports", [15, 25, 40]),
+                ),
             }
         else:
             components = {}
@@ -248,52 +317,104 @@ def compute(con: duckdb.DuckDBPyConnection, ref_date, cfg: Optional[dict] = None
         score = suppress_insufficient(score, tier)
         conf = confidence_for(tier)
         prev = prev_label(con, country, ENGINE, ref_date)
-        label = None if branch == "none" else \
-            bucket_with_hysteresis(score, bucket_thresholds, bucket_labels, prev, margin_pct)
+        label = (
+            None
+            if branch == "none"
+            else bucket_with_hysteresis(
+                score, bucket_thresholds, bucket_labels, prev, margin_pct
+            )
+        )
         data_through = max((d for d in obs_dates.values() if d), default=None)
 
-        records.append(dict(
-            country=country, score=score, label=label, tier=tier, conf=conf,
-            n_avail=n_avail, n_exp=n_exp, raw_values=raw_values, obs_dates=obs_dates,
-            components=components, pct_own_history=pct_own_history, data_through=data_through,
-            branch=branch, has_both=(latest_yield is not None and short_term_reserves is not None),
-            active_components=active_components,
-        ))
+        records.append(
+            dict(
+                country=country,
+                score=score,
+                label=label,
+                tier=tier,
+                conf=conf,
+                n_avail=n_avail,
+                n_exp=n_exp,
+                raw_values=raw_values,
+                obs_dates=obs_dates,
+                components=components,
+                pct_own_history=pct_own_history,
+                data_through=data_through,
+                branch=branch,
+                has_both=(latest_yield is not None and short_term_reserves is not None),
+                active_components=active_components,
+            )
+        )
 
     if not records:
         return pd.DataFrame(columns=_COLUMNS)
 
-    pct_group_by_component = {comp: percentile_group(vals, dev) for comp, vals in raw_by_component.items()}
+    pct_group_by_component = {
+        comp: percentile_group(vals, dev) for comp, vals in raw_by_component.items()
+    }
 
     rows = []
     for r in records:
         country = r["country"]
-        pct_group = {comp: pct_group_by_component[comp].get(country) for comp in r["active_components"]}
+        pct_group = {
+            comp: pct_group_by_component[comp].get(country)
+            for comp in r["active_components"]
+        }
         relative_score = relative_score_from_pct_group(pct_group)
-        relative_label = None if r["branch"] == "none" else \
-            bucket_with_hysteresis(relative_score, bucket_thresholds, bucket_labels, None, margin_pct)
+        relative_label = (
+            None
+            if r["branch"] == "none"
+            else bucket_with_hysteresis(
+                relative_score, bucket_thresholds, bucket_labels, None, margin_pct
+            )
+        )
 
         audit = {
-            "model_version": sha, "ref_date": str(ref_date),
+            "model_version": sha,
+            "ref_date": str(ref_date),
             "asof": str(ref_date) if vintage_safe else None,
             "data_through": r["data_through"],
-            "branch": r["branch"], "has_both_branches_data": r["has_both"],
-            "scope": ("no funding data" if r["branch"] == "none" else
-                     f"{r['branch']} branch (docs/DALIO_PROD_ASSESSMENT_2026-09.md Sec.3.1.7)"),
+            "branch": r["branch"],
+            "has_both_branches_data": r["has_both"],
+            "scope": (
+                "no funding data"
+                if r["branch"] == "none"
+                else f"{r['branch']} branch (docs/DALIO_PROD_ASSESSMENT_2026-09.md Sec.3.1.7)"
+            ),
             "components": {
-                k: {"raw_value": round_or_none(r["raw_values"].get(k)),
-                    "score": r["components"].get(k), "weight": weights.get(k, 0),
+                k: {
+                    "raw_value": round_or_none(r["raw_values"].get(k)),
+                    "score": r["components"].get(k),
+                    "weight": weights.get(k, 0),
                     "obs_date": r["obs_dates"].get(k),
                     "pct_own_history": round_or_none(r["pct_own_history"].get(k)),
-                    "pct_group": round_or_none(pct_group.get(k))}
+                    "pct_group": round_or_none(pct_group.get(k)),
+                }
                 for k in r["active_components"]
             },
-            "missing_components": [k for k in r["active_components"] if r["components"].get(k) is None],
-            "coverage_tier": r["tier"], "vintage_safe": vintage_safe,
+            "missing_components": [
+                k for k in r["active_components"] if r["components"].get(k) is None
+            ],
+            "coverage_tier": r["tier"],
+            "vintage_safe": False,
+            "bond_yield_history": "not point-in-time; observation-date history",
         }
-        rows.append((country, ref_date, ENGINE,
-                    None if r["score"] is None else round(r["score"], 2), r["label"], r["tier"], r["conf"],
-                    r["n_avail"], r["n_exp"], json.dumps(audit), now,
-                    round_or_none(relative_score), relative_label))
+        rows.append(
+            (
+                country,
+                ref_date,
+                ENGINE,
+                None if r["score"] is None else round(r["score"], 2),
+                r["label"],
+                r["tier"],
+                r["conf"],
+                r["n_avail"],
+                r["n_exp"],
+                json.dumps(audit),
+                now,
+                round_or_none(relative_score),
+                relative_label,
+            )
+        )
 
     return pd.DataFrame(rows, columns=_COLUMNS)

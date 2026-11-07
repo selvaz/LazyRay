@@ -13,6 +13,7 @@ docs/DALIO_5ENGINE_IMPLEMENTATION_PLAN_2026-07.md) — no changes needed here.
 
 Usage: see run_dalio_v2.py (repo root) for the CLI entry point.
 """
+
 from __future__ import annotations
 
 import json
@@ -26,8 +27,13 @@ import pandas as pd
 # (score < this value) -> hex color; last bucket catches the rest. Applied
 # via inline style="background:{color}" (never a CSS class) so it always
 # renders regardless of what stylesheet classes exist or don't.
-_COLOR_BUCKETS = [(20, "#16a34a"), (40, "#84cc16"), (60, "#d97706"),
-                  (80, "#ea580c"), (101, "#b91c1c")]
+_COLOR_BUCKETS = [
+    (20, "#16a34a"),
+    (40, "#84cc16"),
+    (60, "#d97706"),
+    (80, "#ea580c"),
+    (101, "#b91c1c"),
+]
 _NA_COLOR = "#94a3b8"
 
 _ENGINE_NAMES = {
@@ -54,19 +60,23 @@ def _country_names() -> dict:
     (package data of the market_data_hub dependency, not duplicated here)."""
     try:
         from market_data_hub.config_loader import get_countries
+
         return {c["iso3"]: c.get("name", c["iso3"]) for c in get_countries()}
     except Exception:
         return {}
 
 
-def collect(con: duckdb.DuckDBPyConnection, ref_date,
-           engines: Optional[Sequence[str]] = None) -> pd.DataFrame:
+def collect(
+    con: duckdb.DuckDBPyConnection, ref_date, engines: Optional[Sequence[str]] = None
+) -> pd.DataFrame:
     """Long-format engine_scores for ref_date, one row per (country, engine),
     optionally filtered to a subset of engines."""
-    q = ("SELECT country_iso3, engine, score, label, coverage_tier, confidence, "
+    q = (
+        "SELECT country_iso3, engine, score, label, coverage_tier, confidence, "
         "n_components, n_expected, components_json, computed_at, "
         "relative_score, relative_label "
-        "FROM engine_scores WHERE ref_date = ?")
+        "FROM engine_scores WHERE ref_date = ?"
+    )
     params = [ref_date]
     if engines:
         q += " AND engine IN (" + ",".join("?" * len(engines)) + ")"
@@ -79,9 +89,18 @@ def to_csv(df: pd.DataFrame, out_path: Path) -> Path:
     if df.empty:
         pd.DataFrame().to_csv(out_path)
         return out_path
-    wide = df.pivot(index="country_iso3", columns="engine",
-                    values=["score", "label", "coverage_tier", "confidence",
-                           "relative_score", "relative_label"])
+    wide = df.pivot(
+        index="country_iso3",
+        columns="engine",
+        values=[
+            "score",
+            "label",
+            "coverage_tier",
+            "confidence",
+            "relative_score",
+            "relative_label",
+        ],
+    )
     wide.columns = [f"{engine}_{field}" for field, engine in wide.columns]
     wide.sort_index().to_csv(out_path)
     return out_path
@@ -127,11 +146,14 @@ _VINTAGE_SAFE_NOTE = (
     "<strong>Point-in-time (vintage-safe)</strong> read: values are as known "
     "as of {ref_date}, from the hub's vintage tables, not revised with "
     "hindsight (vintage log coverage starts 2026-07-10; an as-of date before "
-    "that reflects whatever the log held then).")
+    "that reflects whatever the log held then). Resolved sovereign yields use "
+    "observation-date history and are not point-in-time."
+)
 _VINTAGE_UNSAFE_NOTE = (
     "<strong>Not vintage-aware for this run</strong> (live read of current "
     "values, not point-in-time as of {ref_date}) &mdash; see "
-    "docs/DALIO_VINTAGE_AND_AUDIT_PLAN_2026-07.md.")
+    "docs/DALIO_VINTAGE_AND_AUDIT_PLAN_2026-07.md."
+)
 
 _HEADER_TMPL = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -190,15 +212,17 @@ _FOOTER = """
 """
 
 
-def _comparison_table(pivot_score, pivot_label, pivot_tier, engines_present, names,
-                      avg_score) -> str:
+def _comparison_table(
+    pivot_score, pivot_label, pivot_tier, engines_present, names, avg_score
+) -> str:
     # Plain dark-gray text, no colored badge/pill here (that bug is what made
     # this table unreadable: the badge relied on a CSS class (s0..s4) that
     # was never defined, so white badge text sat on no background at all).
     # td{color:#1a1a2e} from the stylesheet applies directly -- simplest and
     # most robust option, no per-score styling to get wrong.
     header_row = "<th>Country</th>" + "".join(
-        f"<th>{_ENGINE_NAMES.get(e, e)}</th>" for e in engines_present)
+        f"<th>{_ENGINE_NAMES.get(e, e)}</th>" for e in engines_present
+    )
     rows = []
     for iso3 in avg_score.index:
         cells = [f"<td>{names.get(iso3, iso3)} ({iso3})</td>"]
@@ -222,22 +246,38 @@ def _component_rows(components: dict) -> str:
         raw = c.get("raw_value")
         # one malformed (non-numeric) raw_value must degrade to text, not
         # abort the whole report with an unhandled format error
-        raw_txt = ("n/a" if raw is None
-                   else f"{raw:g}" if isinstance(raw, (int, float)) else str(raw))
+        raw_txt = (
+            "n/a"
+            if raw is None
+            else f"{raw:g}"
+            if isinstance(raw, (int, float))
+            else str(raw)
+        )
         score = c.get("score")
-        score_txt = "n/a" if score is None or not isinstance(score, (int, float)) \
+        score_txt = (
+            "n/a"
+            if score is None or not isinstance(score, (int, float))
             else f"{score:.1f}"
+        )
         obs = c.get("obs_date")
         obs_txt = f' <span class="muted">({obs})</span>' if obs else ""
         pct_own = c.get("pct_own_history")
-        pct_own_txt = "n/a" if pct_own is None or not isinstance(pct_own, (int, float)) \
+        pct_own_txt = (
+            "n/a"
+            if pct_own is None or not isinstance(pct_own, (int, float))
             else f"{pct_own:.0f}"
+        )
         pct_grp = c.get("pct_group")
-        pct_grp_txt = "n/a" if pct_grp is None or not isinstance(pct_grp, (int, float)) \
+        pct_grp_txt = (
+            "n/a"
+            if pct_grp is None or not isinstance(pct_grp, (int, float))
             else f"{pct_grp:.0f}"
-        rows.append(f"<tr><td>{name}{obs_txt}</td><td class=n>{raw_txt}</td>"
-                   f"<td class=n>{score_txt}</td><td class=n>{c.get('weight', 0)}</td>"
-                   f"<td class=n>{pct_own_txt}</td><td class=n>{pct_grp_txt}</td></tr>")
+        )
+        rows.append(
+            f"<tr><td>{name}{obs_txt}</td><td class=n>{raw_txt}</td>"
+            f"<td class=n>{score_txt}</td><td class=n>{c.get('weight', 0)}</td>"
+            f"<td class=n>{pct_own_txt}</td><td class=n>{pct_grp_txt}</td></tr>"
+        )
     return "".join(rows)
 
 
@@ -252,12 +292,16 @@ def _dsa_block(components: dict, dsa_audit: Optional[dict]) -> str:
         return f'<div class="tier-note">DSA fan-chart: not computed ({reason})</div>'
     p_up = (components.get("debt_p_up_5y") or {}).get("raw_value")
     p_up_txt = "n/a" if p_up is None else f"{p_up * 100:.0f}%"
-    return (f'<div class="tier-note">DSA fan-chart (+5y): p_up={p_up_txt} &middot; '
-           f'p10={dsa_audit["p10"]:.1f} &middot; p50={dsa_audit["p50"]:.1f} &middot; '
-           f'p90={dsa_audit["p90"]:.1f}</div>')
+    return (
+        f'<div class="tier-note">DSA fan-chart (+5y): p_up={p_up_txt} &middot; '
+        f"p10={dsa_audit['p10']:.1f} &middot; p50={dsa_audit['p50']:.1f} &middot; "
+        f"p90={dsa_audit['p90']:.1f}</div>"
+    )
 
 
-def _country_card(iso3: str, name: str, rows: pd.DataFrame, engines_present, active: bool) -> str:
+def _country_card(
+    iso3: str, name: str, rows: pd.DataFrame, engines_present, active: bool
+) -> str:
     bars = []
     for e in engines_present:
         r = rows[rows["engine"] == e]
@@ -275,14 +319,18 @@ def _country_card(iso3: str, name: str, rows: pd.DataFrame, engines_present, act
         n_comp = "?" if pd.isna(r["n_components"]) else int(r["n_components"])
         n_exp = "?" if pd.isna(r["n_expected"]) else int(r["n_expected"])
         rel_label = r.get("relative_label")
-        rel_txt = f' &middot; relative to peers: {rel_label}' \
-            if isinstance(rel_label, str) and rel_label else ""
+        rel_txt = (
+            f" &middot; relative to peers: {rel_label}"
+            if isinstance(rel_label, str) and rel_label
+            else ""
+        )
         bars.append(
             f'<div class="pbar"><div class="pl">{_ENGINE_NAMES.get(e, e)}</div>'
             f'<div class="pt"><div class="pf" style="width:{pct}%;background:{color}"></div></div>'
             f'<div class="pv">{score_txt}{sep}{label_txt}</div></div>'
             f'<div class="tier-note">coverage: {tier_txt} &middot; '
-            f'confidence: {conf_txt} &middot; {n_comp}/{n_exp} inputs{rel_txt}</div>')
+            f"confidence: {conf_txt} &middot; {n_comp}/{n_exp} inputs{rel_txt}</div>"
+        )
         try:
             audit = json.loads(r["components_json"])
         except Exception:
@@ -292,7 +340,8 @@ def _country_card(iso3: str, name: str, rows: pd.DataFrame, engines_present, act
         if isinstance(gate, dict):
             bars.append(
                 f'<div class="tier-note">FX-constrained gate: {gate.get("reason")} '
-                f'(fx_debt_share={gate.get("fx_debt_share")}, inflation={gate.get("inflation")})</div>')
+                f"(fx_debt_share={gate.get('fx_debt_share')}, inflation={gate.get('inflation')})</div>"
+            )
         branch = audit.get("branch")
         if branch:
             bars.append(f'<div class="tier-note">funding branch: {branch}</div>')
@@ -300,24 +349,31 @@ def _country_card(iso3: str, name: str, rows: pd.DataFrame, engines_present, act
             bars.append(_dsa_block(components, audit.get("dsa")))
         if components:
             bars.append(
-                '<details><summary>components</summary>'
+                "<details><summary>components</summary>"
                 '<table class="comp-table"><thead><tr><th>input</th><th class=n>raw value</th>'
-                f'<th class=n>risk score</th><th class=n>weight</th>'
-                f'<th class=n>pct own-hist</th><th class=n>pct peer-group</th></tr></thead>'
-                f'<tbody>{_component_rows(components)}</tbody></table></details>')
+                f"<th class=n>risk score</th><th class=n>weight</th>"
+                f"<th class=n>pct own-hist</th><th class=n>pct peer-group</th></tr></thead>"
+                f"<tbody>{_component_rows(components)}</tbody></table></details>"
+            )
     cls = "country-card active" if active else "country-card"
-    return (f'<div class="card {cls}" id="c-{iso3}"><h3>{name} ({iso3})</h3>{"".join(bars)}</div>')
+    return f'<div class="card {cls}" id="c-{iso3}"><h3>{name} ({iso3})</h3>{"".join(bars)}</div>'
 
 
-def generate_html_report(con: duckdb.DuckDBPyConnection, ref_date, out_dir: Path,
-                         engines: Optional[Sequence[str]] = None) -> Path:
+def generate_html_report(
+    con: duckdb.DuckDBPyConnection,
+    ref_date,
+    out_dir: Path,
+    engines: Optional[Sequence[str]] = None,
+) -> Path:
     df = collect(con, ref_date, engines)
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"dalio_v2_{ref_date}.html"
     if df.empty:
         out_path.write_text(
             f"<p>No engine_scores rows for ref_date={ref_date}. "
-            f"Run run_dalio_v2.py first.</p>", encoding="utf-8")
+            f"Run run_dalio_v2.py first.</p>",
+            encoding="utf-8",
+        )
         return out_path
 
     names = _country_names()
@@ -331,12 +387,15 @@ def generate_html_report(con: duckdb.DuckDBPyConnection, ref_date, out_dir: Path
     except Exception:
         pass
     data_through_year = ref_date.year - 1
-    vintage_note = (_VINTAGE_SAFE_NOTE if vintage_safe else _VINTAGE_UNSAFE_NOTE).format(
-        ref_date=ref_date)
+    vintage_note = (
+        _VINTAGE_SAFE_NOTE if vintage_safe else _VINTAGE_UNSAFE_NOTE
+    ).format(ref_date=ref_date)
 
     pivot_score = df.pivot(index="country_iso3", columns="engine", values="score")
     pivot_label = df.pivot(index="country_iso3", columns="engine", values="label")
-    pivot_tier = df.pivot(index="country_iso3", columns="engine", values="coverage_tier")
+    pivot_tier = df.pivot(
+        index="country_iso3", columns="engine", values="coverage_tier"
+    )
     avg_score = pivot_score.mean(axis=1, skipna=True).sort_values(ascending=False)
 
     # count rows sitting in each engine's TERMINAL bucket (from config), not
@@ -344,6 +403,7 @@ def generate_html_report(con: duckdb.DuckDBPyConnection, ref_date, out_dir: Path
     # nobody is in the terminal bucket the KPI must read 0, not count the
     # mildest achieved label as "worst"
     from lazyray.config_loader import get_settings
+
     v2cfg = get_settings().get("dalio_v2", {})
     n_worst = 0
     for e in engines_present:
@@ -352,23 +412,39 @@ def generate_html_report(con: duckdb.DuckDBPyConnection, ref_date, out_dir: Path
             n_worst += int((df.loc[df["engine"] == e, "label"] == terminal).sum())
 
     header_html = _HEADER_TMPL.format(
-        ref_date=ref_date, data_through_year=data_through_year,
+        ref_date=ref_date,
+        data_through_year=data_through_year,
         generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
-        model_version=model_version, n_countries=len(avg_score), n_engines=len(engines_present),
-        avg_score=float(avg_score.mean()) if len(avg_score) else 0.0, n_worst=n_worst,
-        vintage_note=vintage_note, style=_STYLE)
+        model_version=model_version,
+        n_countries=len(avg_score),
+        n_engines=len(engines_present),
+        avg_score=float(avg_score.mean()) if len(avg_score) else 0.0,
+        n_worst=n_worst,
+        vintage_note=vintage_note,
+        style=_STYLE,
+    )
 
-    compare_html = _comparison_table(pivot_score, pivot_label, pivot_tier, engines_present,
-                                     names, avg_score)
+    compare_html = _comparison_table(
+        pivot_score, pivot_label, pivot_tier, engines_present, names, avg_score
+    )
 
     options = "".join(
         f'<option value="{iso3}">{names.get(iso3, iso3)} ({iso3})</option>'
-        for iso3 in avg_score.index)
+        for iso3 in avg_score.index
+    )
     cards = "".join(
-        _country_card(iso3, names.get(iso3, iso3), df[df["country_iso3"] == iso3],
-                     engines_present, active=(i == 0))
-        for i, iso3 in enumerate(avg_score.index))
+        _country_card(
+            iso3,
+            names.get(iso3, iso3),
+            df[df["country_iso3"] == iso3],
+            engines_present,
+            active=(i == 0),
+        )
+        for i, iso3 in enumerate(avg_score.index)
+    )
     cards_html = _CARDS_TMPL.format(options=options, cards=cards)
 
-    out_path.write_text(header_html + compare_html + cards_html + _FOOTER, encoding="utf-8")
+    out_path.write_text(
+        header_html + compare_html + cards_html + _FOOTER, encoding="utf-8"
+    )
     return out_path

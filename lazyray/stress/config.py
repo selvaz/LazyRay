@@ -1,4 +1,5 @@
 """Static, deliberately small specification for the stress monitor."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -27,30 +28,104 @@ class Region:
 
 
 REGIONS = {
-    "us": Region("us", (
-        Segment("credit", .25, (Indicator("BAMLH0A0HYM2", "macro"), Indicator("BAMLC0A0CM", "macro"), Indicator("BAMLH0A3HYC", "macro"))),
-        Segment("rates", .20, (Indicator("DFII10", "macro"), Indicator("DGS10", "macro", "abs_change_60"), Indicator("T10Y2Y", "macro", "neg_level"))),
-        Segment("volatility", .20, (Indicator("VIXCLS", "macro"),)),
-        Segment("conditions", .20, (Indicator("NFCI", "macro", frequency="weekly"), Indicator("STLFSI4", "macro", frequency="weekly"))),
-        Segment("liquidity", .15, (Indicator(
-            "net_liquidity_chg_20", "composite", "net_liquidity_chg_20",
-            ("WALCL", "WTREGEN", "RRPONTSYD"),
-            "weekly",
-        ),)),
-    )),
-    "ea": Region("ea", (
-        Segment("rates", .25, (Indicator("ECBDFR", "macro", "abs_change_60"),)),
-        Segment("bond", .30, (Indicator("IRLTLT01DEM156N", "macro", "abs_change_60", frequency="monthly"),)),
-        Segment("periphery", .45, (Indicator("IT-DE", "spread", frequency="monthly"), Indicator("ES-DE", "spread", frequency="monthly"), Indicator("FR-DE", "spread", frequency="monthly"))),
-    )),
-    "em": Region("em", (
-        Segment("hard_currency", .40, (Indicator("EMB-IEF", "pair", "return_diff_20"), Indicator("EMB", "price", "drawdown_60"))),
-        Segment("local_currency", .35, (Indicator("EMLC-IEF", "pair", "return_diff_20"), Indicator("EMLC", "price", "drawdown_60"))),
-        Segment("fx", .25, tuple(Indicator(x, "price", "drawdown_60") for x in ("UUP", "FXE", "FXY"))),
-    )),
+    "us": Region(
+        "us",
+        (
+            Segment(
+                "credit",
+                0.25,
+                (
+                    Indicator("BAMLH0A0HYM2", "macro"),
+                    Indicator("BAMLC0A0CM", "macro"),
+                    Indicator("BAMLH0A3HYC", "macro"),
+                ),
+            ),
+            Segment(
+                "rates",
+                0.20,
+                (
+                    Indicator("DFII10", "macro"),
+                    Indicator("DGS10", "resolved", "abs_change_60"),
+                    Indicator("T10Y2Y", "spread", "neg_level"),
+                ),
+            ),
+            Segment("volatility", 0.20, (Indicator("VIXCLS", "macro"),)),
+            Segment(
+                "conditions",
+                0.20,
+                (
+                    Indicator("NFCI", "macro", frequency="weekly"),
+                    Indicator("STLFSI4", "macro", frequency="weekly"),
+                ),
+            ),
+            Segment(
+                "liquidity",
+                0.15,
+                (
+                    Indicator(
+                        "net_liquidity_chg_20",
+                        "composite",
+                        "net_liquidity_chg_20",
+                        ("WALCL", "WTREGEN", "RRPONTSYD"),
+                        "weekly",
+                    ),
+                ),
+            ),
+        ),
+    ),
+    "ea": Region(
+        "ea",
+        (
+            Segment("rates", 0.25, (Indicator("ECBDFR", "macro", "abs_change_60"),)),
+            Segment("bond", 0.30, (Indicator("DE_10Y", "resolved", "abs_change_60"),)),
+            Segment(
+                "periphery",
+                0.45,
+                (
+                    Indicator("IT-DE", "spread"),
+                    Indicator("ES-DE", "spread"),
+                    Indicator("FR-DE", "spread"),
+                ),
+            ),
+        ),
+    ),
+    "em": Region(
+        "em",
+        (
+            Segment(
+                "hard_currency",
+                0.40,
+                (
+                    Indicator("EMB-IEF", "pair", "return_diff_20"),
+                    Indicator("EMB", "price", "drawdown_60"),
+                ),
+            ),
+            Segment(
+                "local_currency",
+                0.35,
+                (
+                    Indicator("EMLC-IEF", "pair", "return_diff_20"),
+                    Indicator("EMLC", "price", "drawdown_60"),
+                ),
+            ),
+            Segment(
+                "fx",
+                0.25,
+                tuple(
+                    Indicator(x, "price", "drawdown_60") for x in ("UUP", "FXE", "FXY")
+                ),
+            ),
+        ),
+    ),
 }
 
-SPREAD_LEGS = {"IT-DE": ("IRLTLT01ITM156N", "IRLTLT01DEM156N"), "ES-DE": ("IRLTLT01ESM156N", "IRLTLT01DEM156N"), "FR-DE": ("IRLTLT01FRM156N", "IRLTLT01DEM156N")}
+SPREAD_LEGS = {
+    "IT-DE": ("IT_10Y", "DE_10Y"),
+    "ES-DE": ("ES_10Y", "DE_10Y"),
+    "FR-DE": ("FR_10Y", "DE_10Y"),
+    "T10Y2Y": ("US_10Y", "US_2Y"),
+}
+RESOLVED_CONCEPTS = {"DGS10": "US_10Y", "DE_10Y": "DE_10Y"}
 
 # FRED publishes these three net-liquidity legs on different scales: WALCL
 # and WTREGEN are levels in millions of USD, but RRPONTSYD is published in
