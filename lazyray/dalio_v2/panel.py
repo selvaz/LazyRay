@@ -1,60 +1,39 @@
 # -*- coding: utf-8 -*-
+"""Extended panel reads with resolved monthly sovereign yields.
+
+Native historical indicators use hub vintages; resolved rates are observation-date
+history, not point-in-time release or revision history.
 """
-panel.py — point-in-time panel reads for the Dalio v2 engines.
 
-load_panel_ext(ref_date, hub_db_path) returns the same shape as
-market_data_hub.reader.read_macro_panel_ext(): long-format rows with columns
-date, country_iso3, indicator_id, value, indicator_name, pillar, orientation,
-source, provider_dataset, provider_code, unit, frequency, updated_at.
-
-For ref_date >= today it is exactly read_macro_panel_ext() (the live view:
-latest known values). For ref_date < today it reads the hub's *_vintage
-tables via reader.read_macro_panel(asof=...) / reader.read_macro(asof=...)
-so a historical run sees the data AS IT WAS KNOWN on ref_date, not revised
-with hindsight -- avoiding the look-ahead that made every "As of <ref_date>"
-report actually describe today's numbers regardless of ref_date.
-
-v_macro_panel_ext is macro_panel PLUS three views/derivations that the plain
-*_vintage tables cannot reproduce for free (see
-market_data_hub/db/schema.sql's CREATE VIEW v_macro_panel_ext, ~line 622):
-  - bond_yield_10y        -- FRED single-country series (macro_series,
-                             series_id LIKE 'IRLTLT01%'), remapped by country.
-  - implied_interest_rate -- interest_on_debt_gdp / public_debt_gdp * 100,
-                             derived per (date, country) from two macro_panel
-                             rows.
-  - fx_debt_share         -- fx_debt_usd / ext_debt_nonres_usd * 100, derived
-                             per (date, country) from two macro_panel rows.
-The as-of branch below reproduces exactly these three formulas in Python
-from the two source tables' own point-in-time (asof) reads, so the
-point-in-time panel and the live view stay consistent in shape and content.
-
-CAVEAT -- the hub's vintage log only starts 2026-07-10 (per
-docs/DALIO_PROD_ASSESSMENT_2026-09.md §2). An `asof` date before that simply
-returns whatever the vintage tables happen to hold as of that call (which
-may be sparse or empty for a given key): this module does not special-case
-that boundary -- it is the hub reader's own contract, and read_macro_panel
-already documents "avoiding revision look-ahead in backtests" without a
-minimum-date guard. Point-in-time correctness on this data source is only as
-good as the vintage log's own coverage.
-"""
 from __future__ import annotations
 
 from datetime import date as _date
 from typing import Optional
 
 import pandas as pd
-from market_data_hub.config_loader import get_fred_series, get_macro_panel_specs
-from market_data_hub.reader import read_macro, read_macro_panel, read_macro_panel_ext
+from market_data_hub.config_loader import get_countries, get_macro_panel_specs
+from market_data_hub.reader import (
+    read_macro_panel,
+    read_macro_panel_ext,
+    read_resolved_history,
+)
+from market_data_hub.resolved_rates import load_resolved_rates
 
 _EXT_COLUMNS = [
-    "date", "country_iso3", "indicator_id", "value", "indicator_name", "pillar",
-    "orientation", "source", "provider_dataset", "provider_code", "unit",
-    "frequency", "updated_at",
+    "date",
+    "country_iso3",
+    "indicator_id",
+    "value",
+    "indicator_name",
+    "pillar",
+    "orientation",
+    "source",
+    "provider_dataset",
+    "provider_code",
+    "unit",
+    "frequency",
+    "updated_at",
 ]
-
-# FRED series remapped into 'bond_yield_10y' panel rows by v_macro_panel_ext
-# (WHERE series_id LIKE 'IRLTLT01%' AND value IS NOT NULL).
-_BOND_YIELD_PREFIX = "IRLTLT01"
 
 
 def used_asof_path(ref_date) -> bool:
@@ -106,38 +85,47 @@ def _native_panel_asof(asof: str, hub_db_path: Optional[str]) -> pd.DataFrame:
     return raw[_EXT_COLUMNS]
 
 
-def _bond_yield_10y_asof(asof: str, hub_db_path: Optional[str]) -> pd.DataFrame:
-    """Point-in-time reproduction of v_macro_panel_ext's bond_yield_10y
-    branch: every FRED series whose id starts with 'IRLTLT01', remapped from
-    macro_series.country -> country_iso3 (see schema.sql's comment: 'country
-    holds the ISO3 for these cross-country series, so country AS
-    country_iso3 is direct')."""
-    fred = [e for e in get_fred_series() if str(e.get("symbol", "")).startswith(_BOND_YIELD_PREFIX)]
-    if not fred:
-        return _empty_ext()
-    series_ids = [e["symbol"] for e in fred]
-    country_by_symbol = {e["symbol"]: e.get("country") for e in fred}
-    m = read_macro(series_ids=series_ids, asof=asof, wide=False, db_path=hub_db_path)
-    if m is None or m.empty:
-        return _empty_ext()
-    m = m.dropna(subset=["value"]).copy()
-    if m.empty:
-        return _empty_ext()
-    m["country_iso3"] = m["series_id"].map(country_by_symbol)
-    m = m.dropna(subset=["country_iso3"])
-    if m.empty:
-        return _empty_ext()
-    m["indicator_id"] = "bond_yield_10y"
-    m["indicator_name"] = "10Y government bond yield (OECD via FRED)"
-    m["pillar"] = "markets"
-    m["orientation"] = 0
-    m["source"] = "fred"
-    m["provider_dataset"] = "FRED"
-    m["provider_code"] = m["series_id"]
-    m["unit"] = "percent"
-    m["frequency"] = "M"
-    m["updated_at"] = pd.NaT
-    return m[_EXT_COLUMNS]
+def _bond_yield_10y(asof: str, hub_db_path: Optional[str]) -> pd.DataFrame:
+    # Resolved history is not point-in-time: its cutoff is observation date only.
+    _, concepts = load_resolved_rates()
+    frames = []
+    for country in get_countries():
+        concept = f"{country.get('iso2')}_10Y"
+        if concept not in concepts or not country.get("iso3"):
+            continue
+        history = read_resolved_history(concept, end=asof, db_path=hub_db_path)
+        if history is None or history.empty:
+            continue
+        history = history.dropna(subset=["value"]).copy()
+        if history.empty:
+            continue
+        history["date"] = pd.to_datetime(history["date"])
+        history = (
+            history.sort_values("date")
+            .groupby(history["date"].dt.to_period("M"), sort=True)
+            .tail(1)
+            .copy()
+        )
+        # Label completed months at month-end; retain the cutoff for a partial month.
+        history["date"] = (
+            history["date"]
+            .dt.to_period("M")
+            .dt.to_timestamp("M")
+            .clip(upper=pd.Timestamp(asof))
+        )
+        history["country_iso3"] = country["iso3"]
+        history["indicator_id"] = "bond_yield_10y"
+        history["indicator_name"] = "10Y government bond yield"
+        history["pillar"] = "markets"
+        history["orientation"] = 0
+        history["source"] = "resolved_rates"
+        history["provider_dataset"] = "resolved_rates"
+        history["provider_code"] = concept
+        history["unit"] = "percent"
+        history["frequency"] = "M"
+        history["updated_at"] = pd.NaT
+        frames.append(history[_EXT_COLUMNS])
+    return pd.concat(frames, ignore_index=True) if frames else _empty_ext()
 
 
 def _derived_from_native(native_raw: pd.DataFrame) -> pd.DataFrame:
@@ -147,23 +135,35 @@ def _derived_from_native(native_raw: pd.DataFrame) -> pd.DataFrame:
     never a second, independently-vintaged read of the source indicators."""
     if native_raw.empty:
         return _empty_ext()
-    need = {"interest_on_debt_gdp", "public_debt_gdp", "fx_debt_usd", "ext_debt_nonres_usd"}
+    need = {
+        "interest_on_debt_gdp",
+        "public_debt_gdp",
+        "fx_debt_usd",
+        "ext_debt_nonres_usd",
+    }
     sub = native_raw[native_raw["indicator_id"].isin(need)]
     if sub.empty:
         return _empty_ext()
-    wide = sub.pivot_table(index=["date", "country_iso3"], columns="indicator_id",
-                           values="value", aggfunc="last").reset_index()
+    wide = sub.pivot_table(
+        index=["date", "country_iso3"],
+        columns="indicator_id",
+        values="value",
+        aggfunc="last",
+    ).reset_index()
 
     frames = []
     if {"interest_on_debt_gdp", "public_debt_gdp"} <= set(wide.columns):
-        d = wide[["date", "country_iso3", "interest_on_debt_gdp", "public_debt_gdp"]].copy()
+        d = wide[
+            ["date", "country_iso3", "interest_on_debt_gdp", "public_debt_gdp"]
+        ].copy()
         d = d.dropna(subset=["interest_on_debt_gdp"])
         d = d[d["public_debt_gdp"] > 0]
         if not d.empty:
             d["indicator_id"] = "implied_interest_rate"
             d["value"] = d["interest_on_debt_gdp"] / d["public_debt_gdp"] * 100.0
-            d["indicator_name"] = ("Implied interest rate on govt debt "
-                                   "(IMF interest %GDP ÷ debt %GDP)")
+            d["indicator_name"] = (
+                "Implied interest rate on govt debt (IMF interest %GDP ÷ debt %GDP)"
+            )
             d["pillar"] = "markets"
             d["orientation"] = 0
             d["source"] = "derived"
@@ -197,21 +197,32 @@ def _derived_from_native(native_raw: pd.DataFrame) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
+def replace_bond_yields(
+    panel: pd.DataFrame, ref_date, hub_db_path: Optional[str] = None
+) -> pd.DataFrame:
+    """Replace the hub view's bond rows with monthly resolved histories."""
+    panel = (
+        panel[panel["indicator_id"] != "bond_yield_10y"].copy()
+        if not panel.empty
+        else _empty_ext()
+    )
+    bond = _bond_yield_10y(str(ref_date), hub_db_path)
+    frames = [f for f in (panel, bond) if not f.empty]
+    return pd.concat(frames, ignore_index=True) if frames else _empty_ext()
+
+
 def load_panel_ext(ref_date, hub_db_path: Optional[str] = None) -> pd.DataFrame:
-    """Point-in-time (ref_date < today) or live (ref_date >= today) read of
-    the full v_macro_panel_ext shape. See module docstring for the asof
-    reconstruction and its vintage-log-coverage caveat."""
-    if not used_asof_path(ref_date):
-        return read_macro_panel_ext(db_path=hub_db_path)
-
-    asof = str(ref_date)
-    native = _native_panel_asof(asof, hub_db_path)
-    bond = _bond_yield_10y_asof(asof, hub_db_path)
-    derived = _derived_from_native(native)
-
-    frames = [f for f in (native, bond, derived) if not f.empty]
-    if not frames:
-        return _empty_ext()
-    out = pd.concat(frames, ignore_index=True)
-    out["date"] = pd.to_datetime(out["date"])
-    return out.sort_values(["indicator_id", "country_iso3", "date"]).reset_index(drop=True)
+    """Read the extended panel, replacing yields with resolved history."""
+    if used_asof_path(ref_date):
+        native = _native_panel_asof(str(ref_date), hub_db_path)
+        frames = [f for f in (native, _derived_from_native(native)) if not f.empty]
+        panel = pd.concat(frames, ignore_index=True) if frames else _empty_ext()
+    else:
+        panel = read_macro_panel_ext(db_path=hub_db_path)
+    out = replace_bond_yields(panel, ref_date, hub_db_path)
+    if not out.empty:
+        out["date"] = pd.to_datetime(out["date"])
+        out = out.sort_values(["indicator_id", "country_iso3", "date"]).reset_index(
+            drop=True
+        )
+    return out

@@ -683,6 +683,22 @@ def _fl_row(date_, iso3, ind, val):
             "unit": "pct", "frequency": "M" if ind in ("bond_yield_10y", "bis_policy_rate", "reer_broad") else "A"}
 
 
+def _resolved_yields(monkeypatch, series):
+    """Serve 10Y sovereign yields through the resolved-history reader.
+
+    bond_yield_10y no longer comes from macro_panel: the panel replaces it with
+    monthly resolved histories, so tests feed that reader instead of seeding
+    hub rows. ``series`` maps concept -> [(date, value), ...].
+    """
+    from lazyray.dalio_v2 import panel
+
+    def history(concept, end=None, **kwargs):
+        pts = [(d, v) for d, v in series.get(concept, []) if end is None or str(d) <= end]
+        return pd.DataFrame({"date": [str(d) for d, _ in pts], "value": [v for _, v in pts]})
+
+    monkeypatch.setattr(panel, "read_resolved_history", history)
+
+
 def _seed_funding_liquidity(con):
     # short_term_debt_reserves (WDI, LEVEL) -> _LEVEL_DATE; bond_yield_10y/
     # bis_policy_rate/reer_broad (monthly, no forecast rows) stay exempt from
@@ -691,15 +707,15 @@ def _seed_funding_liquidity(con):
     # selection prefers market when both are fresh, see module docstring).
     rows = [
         _fl_row(_LEVEL_DATE, "DEU", "short_term_debt_reserves", 20.0),
-        _fl_row(dt.date(2025, 12, 31), "DEU", "bond_yield_10y", 2.0),
-        _fl_row(dt.date(2026, 12, 31), "DEU", "bond_yield_10y", 2.5),      # +50bp, mild
-        _fl_row(dt.date(2025, 12, 31), "ITA", "bond_yield_10y", 4.0),
-        _fl_row(dt.date(2026, 12, 31), "ITA", "bond_yield_10y", 8.0),      # +400bp, spread blowout
     ]
     upsert(con, "macro_panel", pd.DataFrame(rows))
 
 
-def test_funding_liquidity_market_branch(tmp_db):
+def test_funding_liquidity_market_branch(tmp_db, monkeypatch):
+    _resolved_yields(monkeypatch, {
+        "DE_10Y": [(dt.date(2025, 12, 31), 2.0), (dt.date(2026, 12, 31), 2.5)],   # +50bp, mild
+        "IT_10Y": [(dt.date(2025, 12, 31), 4.0), (dt.date(2026, 12, 31), 8.0)],   # +400bp, blowout
+    })
     con = get_hub_conn()
     _seed_funding_liquidity(con)
     con.commit()
@@ -735,7 +751,11 @@ def test_funding_liquidity_market_branch(tmp_db):
     assert {"term_spread_pp", "reer_change_12m_pct"} <= set(ita_audit["missing_components"])
 
 
-def test_funding_liquidity_term_spread_peer_percentile_is_not_inverted(tmp_db):
+def test_funding_liquidity_term_spread_peer_percentile_is_not_inverted(tmp_db, monkeypatch):
+    _resolved_yields(monkeypatch, {
+        "DE_10Y": [(dt.date(2026, 6, 30), 1.0)],   # term_spread = -2.0 (inverted)
+        "IT_10Y": [(dt.date(2026, 6, 30), 5.0)],   # term_spread = +2.0 (normal)
+    })
     # F3 regression (Codex review of PR #10): term_spread_pp is scored with
     # orientation=-1 (a MORE inverted/negative curve is worse), but the peer
     # percentile (raw_by_component -> percentile_group) fed it the raw,
@@ -745,10 +765,8 @@ def test_funding_liquidity_term_spread_peer_percentile_is_not_inverted(tmp_db):
     # riskiest. DEU here plays the inverted-curve country, ITA the normal
     # positive-curve one; both DM, so percentile_group ranks them together.
     rows = [
-        _fl_row(dt.date(2026, 6, 30), "DEU", "bond_yield_10y", 1.0),
-        _fl_row(dt.date(2026, 6, 30), "DEU", "bis_policy_rate", 3.0),   # term_spread = -2.0 (inverted)
-        _fl_row(dt.date(2026, 6, 30), "ITA", "bond_yield_10y", 5.0),
-        _fl_row(dt.date(2026, 6, 30), "ITA", "bis_policy_rate", 3.0),   # term_spread = +2.0 (normal)
+        _fl_row(dt.date(2026, 6, 30), "DEU", "bis_policy_rate", 3.0),
+        _fl_row(dt.date(2026, 6, 30), "ITA", "bis_policy_rate", 3.0),
     ]
     con = get_hub_conn()
     upsert(con, "macro_panel", pd.DataFrame(rows))

@@ -6,7 +6,7 @@ This is LazyRay's daily market-based monitor of funding conditions and systemic 
 
 Higher transformed values mean more stress. US credit is HY OAS (`BAMLH0A0HYM2`), IG OAS (`BAMLC0A0CM`) and CCC OAS (`BAMLH0A3HYC`); rates is 10Y real yield (`DFII10`), absolute 60-business-day 10Y yield change (`DGS10`) and negative 10Y-2Y slope (`T10Y2Y`); volatility is VIX (`VIXCLS`); and conditions are NFCI and STLFSI4. Liquidity is one declared composite: negative 20-business-day change of `WALCL - WTREGEN - RRPONTSYD`, each leg first scaled to a common unit — FRED publishes the first two in millions of dollars and RRP in billions, so the legs are not comparable as reported. Falling net liquidity is stress. All are FRED from the hub.
 
-EA rates is absolute 60-business-day change of ECB DFR (`ECBDFR`, 25%). Bond is absolute 60-business-day change of Germany's monthly 10Y yield (`IRLTLT01DEM156N`, 30%). Periphery is the positive BTP-Bund, Spain-Bund and France-Bund spreads from FRED monthly 10Y yields (45%).
+EA rates is absolute 60-business-day change of ECB DFR (`ECBDFR`, 25%). Bond is absolute 60-business-day change of Germany's resolved 10Y yield (`DE_10Y`, 30%). Periphery is the positive BTP-Bund, Spain-Bund and France-Bund spreads from resolved 10Y concepts (45%).
 
 Policy-rate levels, price-index levels, and RRP/TGA levels are deliberately excluded: their trends and cycle-driven drifts make an expanding percentile of a level persistently misleading. Changes and spreads retain the stress-relevant shock or relative-price signal.
 

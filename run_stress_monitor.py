@@ -1,4 +1,5 @@
 """Run LazyRay's daily market-based systemic stress monitor."""
+
 from __future__ import annotations
 
 import argparse
@@ -17,10 +18,17 @@ def _send(text: str) -> None:
     try:
         from lazytools.connectors.telegram import TelegramClient
     except ModuleNotFoundError as exc:
-        raise ModuleNotFoundError('sending needs the Telegram connector: pip install -e ".[telegram]"') from exc
-    token, chat_id = os.environ.get("TELEGRAM_BOT_TOKEN"), os.environ.get("TELEGRAM_CHAT_ID")
+        raise ModuleNotFoundError(
+            'sending needs the Telegram connector: pip install -e ".[telegram]"'
+        ) from exc
+    token, chat_id = (
+        os.environ.get("TELEGRAM_BOT_TOKEN"),
+        os.environ.get("TELEGRAM_CHAT_ID"),
+    )
     if not token or not chat_id:
-        raise RuntimeError("Telegram not configured: set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID.")
+        raise RuntimeError(
+            "Telegram not configured: set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID."
+        )
     with TelegramClient.from_token(token) as client:
         client.send_message(chat_id=chat_id, text=text)
 
@@ -35,12 +43,23 @@ def main() -> int:
     p.add_argument("--notify", action="store_true")
     p.add_argument("--force-notify", action="store_true")
     args = p.parse_args()
-    regions = tuple(REGIONS) if args.region == "all" else tuple(x.strip() for x in args.region.split(","))
+    regions = (
+        tuple(REGIONS)
+        if args.region == "all"
+        else tuple(x.strip() for x in args.region.split(","))
+    )
     unknown = set(regions) - set(REGIONS)
     if unknown:
         p.error(f"unknown region(s): {', '.join(sorted(unknown))}")
     try:
-        result = run_monitor(regions, hub_db=args.hub_db, db_path=args.db, as_of=args.as_of, write=not args.dry_run)
+        result = run_monitor(
+            regions,
+            hub_db=args.hub_db,
+            db_path=args.db,
+            as_of=args.as_of,
+            write=not args.dry_run,
+        )
+        print("resolved quality: " + repr(result.get("resolved_quality", {})))
         if args.dry_run:
             # Use the normal persistence/digest path in a disposable database
             # so operators preview precisely the message a real run would
@@ -48,6 +67,7 @@ def main() -> int:
             with tempfile.TemporaryDirectory() as directory:
                 preview_db = os.path.join(directory, "stress-preview.duckdb")
                 from lazyray.stress.persist import write_results
+
                 write_results(result["index_rows"], result["components"], preview_db)
                 con = get_conn(preview_db)
                 try:
