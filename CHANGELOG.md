@@ -5,6 +5,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.13] — 2026-11-20
+
+### Changed
+- market-data-hub pinned to v0.4.0 (default XBRL mapping v3, shared DuckDB connection handle, schema 34) and the `telegram` extra to lazytoolkit v0.10.12.
+
 ## [0.2.12] — 2026-11-14
 
 ### Changed
