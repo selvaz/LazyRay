@@ -5,6 +5,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.14] — 2026-11-21
+
+### Changed
+- `telegram` extra pins lazytoolkit v0.10.13 (release train 2026-11-21).
+
 ## [0.2.13] — 2026-11-20
 
 ### Changed
